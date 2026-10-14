@@ -1182,6 +1182,44 @@ function Timeline({
   const internalTimelineRef = useRef<HTMLDivElement>(null);
   const selectedTimelineRef = timelineRef || internalTimelineRef;
 
+  // live-edge display clock
+  //
+  // `timeRange.before` is fixed for the parent RecordingView's whole
+  // lifetime (it is also used as the React `key` for RecordingView in
+  // Events.tsx, so changing it there would remount the whole view and
+  // reset zoom/scroll/playback). That's fine for data fetching, but it
+  // means any UI that reads `timeRange.before` as "now" freezes at
+  // whatever time the view was opened, even though the camera keeps
+  // recording in the background.
+  //
+  // `liveEdgeNow` is a display-only clock that advances independently of
+  // `timeRange`, so the timeline's top-of-track position can keep
+  // reflecting the real current time without touching data fetching or
+  // triggering a remount. Nothing here fetches new recordings; actually
+  // pulling freshly recorded footage into this view while staying on it
+  // is a separate, larger piece of work (see the live-edge-handoff
+  // feature branch notes).
+  const [liveEdgeNow, setLiveEdgeNow] = useState(() =>
+    Math.max(timeRange.before, Date.now() / 1000),
+  );
+
+  useEffect(() => {
+    // only tick forward while viewing the live edge of the timeline; a
+    // historical recording (timeRange.before well in the past) has no
+    // "now" to chase, so don't bother scheduling the interval for it
+    const viewingLiveEdge = Date.now() / 1000 - timeRange.before < 60;
+
+    if (!viewingLiveEdge) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setLiveEdgeNow(Math.max(timeRange.before, Date.now() / 1000));
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [timeRange.before]);
+
   // timeline interaction
 
   const [zoomSettings, setZoomSettings] = useState({
@@ -1349,7 +1387,11 @@ function Timeline({
             timelineRef={selectedTimelineRef}
             segmentDuration={zoomSettings.segmentDuration}
             timestampSpread={zoomSettings.timestampSpread}
-            timelineStart={timeRange.before}
+            // liveEdgeNow (not timeRange.before) so the top of the track
+            // keeps advancing with real time instead of freezing at the
+            // moment this view was opened; see the liveEdgeNow comment
+            // above for why timeRange.before itself stays fixed
+            timelineStart={liveEdgeNow}
             timelineEnd={timeRange.after}
             showHandlebar={exportRange == undefined}
             showExportHandles={exportRange != undefined}
