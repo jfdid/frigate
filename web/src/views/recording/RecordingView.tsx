@@ -175,6 +175,67 @@ export function RecordingView({
     [reviewItems, mainCamera],
   );
 
+  // live-edge growth
+  //
+  // `timeRange` is a prop fixed for this component's whole lifetime (it
+  // also doubles as the React `key` for RecordingView in Events.tsx, so
+  // changing it there would remount the whole view and reset zoom/
+  // scroll/playback). That's fine as the mount-time anchor, but it means
+  // the view's notion of "available recordings" never grows: anything
+  // the camera records after the view is opened stays invisible and
+  // unplayable until you leave and reopen it.
+  //
+  // `liveEdgeBefore` is a local upper bound that starts at
+  // `timeRange.before` and grows every 15s while viewing the live edge,
+  // lagging real time by RECORDING_INGEST_LAG_S so it never advertises a
+  // window the backend could not possibly have ingested yet (segments
+  // roll roughly every 10s and the recording maintainer polls for new
+  // files every 5s). `effectiveTimeRange` is what every data-dependent
+  // piece of this view (chunking, coverage, the motion/no-recording
+  // queries, and in turn the video/preview players) should read instead
+  // of the raw `timeRange` prop; the original `timeRange` prop is kept
+  // around only for the parts that intentionally anchor to mount time
+  // (initial playbackStart, the quality coverage fetch does not need to
+  // move).
+  //
+  // A gap naturally appears between the last ingested recording and
+  // `effectiveTimeRange.before`: the player already refuses to seek past
+  // its known recordings (DynamicVideoController.seekToTimestamp no-ops
+  // and shows "No recordings found for this time"), and the timeline
+  // already renders unavailable spans in a visually distinct muted style
+  // (MotionSegment's hasRecording == false case). That gap is intentional
+  // (see the live-edge-handoff branch notes); this piece does not try to
+  // hide or shift across it.
+  const RECORDING_INGEST_LAG_S = 15;
+
+  const [liveEdgeBefore, setLiveEdgeBefore] = useState(() =>
+    Math.max(timeRange.before, Date.now() / 1000 - RECORDING_INGEST_LAG_S),
+  );
+
+  useEffect(() => {
+    // only tick forward while viewing the live edge; a historical
+    // recording (timeRange.before well in the past) has no "now" to
+    // chase, so don't bother scheduling the interval for it
+    const viewingLiveEdge = Date.now() / 1000 - timeRange.before < 60;
+
+    if (!viewingLiveEdge) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setLiveEdgeBefore(
+        Math.max(timeRange.before, Date.now() / 1000 - RECORDING_INGEST_LAG_S),
+      );
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [timeRange.before]);
+
+  const effectiveTimeRange = useMemo<TimeRange>(
+    () => ({ after: timeRange.after, before: liveEdgeBefore }),
+    [timeRange.after, liveEdgeBefore],
+  );
+
   // timeline
 
   const [recording] = useOverlayState<RecordingStartingPoint>(
@@ -199,8 +260,8 @@ export function RecordingView({
   );
 
   const chunkedTimeRange = useMemo(
-    () => getChunkedTimeDay(timeRange),
-    [timeRange],
+    () => getChunkedTimeDay(effectiveTimeRange),
+    [effectiveTimeRange],
   );
   const [selectedRangeIdx, setSelectedRangeIdx] = useState(
     findChunkIndex(chunkedTimeRange, startTime),
@@ -1116,7 +1177,11 @@ export function RecordingView({
                 ? timelineType
                 : "timeline") ?? "timeline"
             }
-            timeRange={timeRange}
+            // effectiveTimeRange (not timeRange) so the timeline, its
+            // motion/coverage/no-recording queries, and in turn the
+            // video/preview players all see the live edge grow; see the
+            // liveEdgeBefore comment above
+            timeRange={effectiveTimeRange}
             mainCameraReviewItems={mainCameraReviewItems}
             activeReviewItem={activeReviewItem}
             currentTime={currentTime}
@@ -1182,43 +1247,10 @@ function Timeline({
   const internalTimelineRef = useRef<HTMLDivElement>(null);
   const selectedTimelineRef = timelineRef || internalTimelineRef;
 
-  // live-edge display clock
-  //
-  // `timeRange.before` is fixed for the parent RecordingView's whole
-  // lifetime (it is also used as the React `key` for RecordingView in
-  // Events.tsx, so changing it there would remount the whole view and
-  // reset zoom/scroll/playback). That's fine for data fetching, but it
-  // means any UI that reads `timeRange.before` as "now" freezes at
-  // whatever time the view was opened, even though the camera keeps
-  // recording in the background.
-  //
-  // `liveEdgeNow` is a display-only clock that advances independently of
-  // `timeRange`, so the timeline's top-of-track position can keep
-  // reflecting the real current time without touching data fetching or
-  // triggering a remount. Nothing here fetches new recordings; actually
-  // pulling freshly recorded footage into this view while staying on it
-  // is a separate, larger piece of work (see the live-edge-handoff
-  // feature branch notes).
-  const [liveEdgeNow, setLiveEdgeNow] = useState(() =>
-    Math.max(timeRange.before, Date.now() / 1000),
-  );
-
-  useEffect(() => {
-    // only tick forward while viewing the live edge of the timeline; a
-    // historical recording (timeRange.before well in the past) has no
-    // "now" to chase, so don't bother scheduling the interval for it
-    const viewingLiveEdge = Date.now() / 1000 - timeRange.before < 60;
-
-    if (!viewingLiveEdge) {
-      return;
-    }
-
-    const interval = setInterval(() => {
-      setLiveEdgeNow(Math.max(timeRange.before, Date.now() / 1000));
-    }, 15000);
-
-    return () => clearInterval(interval);
-  }, [timeRange.before]);
+  // the `timeRange` prop now already is the growing live-edge value
+  // (RecordingView passes effectiveTimeRange here, not its raw timeRange
+  // prop), so this component just reads it directly; no separate ticking
+  // state needed here, see the liveEdgeBefore comment in RecordingView
 
   // timeline interaction
 
@@ -1387,11 +1419,12 @@ function Timeline({
             timelineRef={selectedTimelineRef}
             segmentDuration={zoomSettings.segmentDuration}
             timestampSpread={zoomSettings.timestampSpread}
-            // liveEdgeNow (not timeRange.before) so the top of the track
-            // keeps advancing with real time instead of freezing at the
-            // moment this view was opened; see the liveEdgeNow comment
-            // above for why timeRange.before itself stays fixed
-            timelineStart={liveEdgeNow}
+            // timeRange.before here is already RecordingView's growing
+            // liveEdgeBefore (passed down as this component's timeRange
+            // prop), so the top of the track keeps advancing with real
+            // time instead of freezing at the moment this view was
+            // opened; see the liveEdgeBefore comment in RecordingView
+            timelineStart={timeRange.before}
             timelineEnd={timeRange.after}
             showHandlebar={exportRange == undefined}
             showExportHandles={exportRange != undefined}
