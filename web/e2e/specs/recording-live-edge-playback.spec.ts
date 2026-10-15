@@ -4,21 +4,27 @@
  * The recording view grows its window toward "now" every 15s while it is
  * open at the live edge, which rebuilds the player's source. These cases
  * play real (tiny) H.264 media through hls.js so the rebuild can be
- * observed: playback that ran out of footage resumes, playback in progress
- * continues from the playhead, and a paused player stays paused without a
- * stuck loading spinner.
+ * observed: playback in progress continues from the playhead, a paused
+ * player stays paused without a stuck loading spinner, and playback that
+ * runs into the newest footage carries on with the live stream.
  */
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test, expect, type FrigateApp } from "../fixtures/frigate-test";
+import {
+  LIVE_STREAM_CONFIG,
+  mockLiveStream,
+} from "../helpers/live-stream-mocker";
 
 const SEGMENT_S = 2;
 
 // midday, so the recording view's day never starts inside the test window
 const NOW = new Date(2026, 8, 2, 12, 30, 0);
 const SEGMENT = readFileSync(
-  fileURLToPath(new URL("../fixtures/media/recording-2s.mpegts", import.meta.url)),
+  fileURLToPath(
+    new URL("../fixtures/media/recording-2s.mpegts", import.meta.url),
+  ),
 );
 
 /** Whole segments of footage between after and before. */
@@ -128,8 +134,11 @@ async function mockRecordings(frigateApp: FrigateApp) {
 async function openAtLiveEdge(frigateApp: FrigateApp, secondsBack: number) {
   const page = frigateApp.page;
   await page.clock.install({ time: NOW });
-  await frigateApp.installDefaults();
+  await frigateApp.installDefaults({ config: LIVE_STREAM_CONFIG });
   await mockRecordings(frigateApp);
+  // playback near the live edge connects the live stream ahead of time;
+  // its 3s of media goes out on release(), as a real stream never runs dry
+  const stream = await mockLiveStream(page);
 
   const playbackTime = Math.floor(NOW.getTime() / 1000) - secondsBack;
   await frigateApp.goto(`/review?timestamp=front_door_${playbackTime}`);
@@ -137,6 +146,8 @@ async function openAtLiveEdge(frigateApp: FrigateApp, secondsBack: number) {
   await expect(
     page.locator('[role="scrollbar"] .rounded-full').first(),
   ).toBeVisible({ timeout: 15_000 });
+
+  return stream;
 }
 
 const videoState = (frigateApp: FrigateApp) =>
@@ -156,6 +167,26 @@ const videoState = (frigateApp: FrigateApp) =>
 
 const spinner = (frigateApp: FrigateApp) =>
   frigateApp.page.locator('[aria-label="Loading…"]');
+
+const activeLivePlayer = (frigateApp: FrigateApp) =>
+  frigateApp.page.locator(
+    '[data-testid="recording-live-player"][data-active="true"]',
+  );
+
+/** Jumps to just before the end of the loaded footage and lets it end. */
+async function playOutFootage(frigateApp: FrigateApp) {
+  await frigateApp.page.evaluate(() => {
+    const video = document.querySelector("video");
+    if (video) {
+      video.currentTime = video.duration - 0.3;
+    }
+  });
+  await expect
+    .poll(async () => (await videoState(frigateApp))?.ended, {
+      timeout: 10_000,
+    })
+    .toBe(true);
+}
 
 /** Runs the clock past two live edge ticks and waits for the rebuild. */
 async function tickAndRebuild(frigateApp: FrigateApp) {
@@ -183,7 +214,7 @@ async function waitForPlayback(frigateApp: FrigateApp) {
 }
 
 test.describe("Recording live edge playback: desktop @medium", () => {
-  test("playback that ran out of footage resumes when the live edge grows", async ({
+  test("playback that runs into the newest footage carries on live", async ({
     frigateApp,
   }) => {
     if (frigateApp.isMobile) {
@@ -191,32 +222,17 @@ test.describe("Recording live edge playback: desktop @medium", () => {
       return;
     }
 
-    await openAtLiveEdge(frigateApp, 40);
+    const stream = await openAtLiveEdge(frigateApp, 40);
     await waitForPlayback(frigateApp);
+    await playOutFootage(frigateApp);
 
-    // play out the rest of the footage
-    await frigateApp.page.evaluate(() => {
-      const video = document.querySelector("video");
-      if (video) {
-        video.currentTime = video.duration - 0.3;
-      }
-    });
-    await expect
-      .poll(async () => (await videoState(frigateApp))?.ended, {
-        timeout: 10_000,
-      })
-      .toBe(true);
-
-    await tickAndRebuild(frigateApp);
-
-    const resumedFrom = (await videoState(frigateApp))?.currentTime ?? 0;
-    await expect
-      .poll(async () => {
-        const state = await videoState(frigateApp);
-        return !!state && !state.paused && state.currentTime > resumedFrom;
-      })
-      .toBe(true);
-    await expect(spinner(frigateApp)).toBeHidden();
+    await expect(activeLivePlayer(frigateApp)).toBeVisible();
+    stream.release();
+    await expect(activeLivePlayer(frigateApp)).toHaveAttribute(
+      "data-ready",
+      "true",
+    );
+    await expect(frigateApp.page).toHaveURL(/\/review/);
   });
 
   test("a paused player stays paused across a live edge tick", async ({
@@ -280,7 +296,7 @@ test.describe("Recording live edge playback: desktop @medium", () => {
 });
 
 test.describe("Recording live edge playback: mobile @medium @mobile", () => {
-  test("playback that ran out of footage resumes when the live edge grows", async ({
+  test("playback that runs into the newest footage carries on live", async ({
     frigateApp,
   }) => {
     if (!frigateApp.isMobile) {
@@ -290,21 +306,8 @@ test.describe("Recording live edge playback: mobile @medium @mobile", () => {
 
     await openAtLiveEdge(frigateApp, 40);
     await waitForPlayback(frigateApp);
+    await playOutFootage(frigateApp);
 
-    await frigateApp.page.evaluate(() => {
-      const video = document.querySelector("video");
-      if (video) {
-        video.currentTime = video.duration - 0.3;
-      }
-    });
-    await expect
-      .poll(async () => (await videoState(frigateApp))?.ended, {
-        timeout: 10_000,
-      })
-      .toBe(true);
-
-    await tickAndRebuild(frigateApp);
-    await waitForPlayback(frigateApp);
-    await expect(spinner(frigateApp)).toBeHidden();
+    await expect(activeLivePlayer(frigateApp)).toBeVisible();
   });
 });
