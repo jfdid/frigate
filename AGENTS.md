@@ -2,6 +2,12 @@
 
 This document provides coding guidelines and best practices for contributing to Frigate NVR, a complete and local NVR designed for Home Assistant with AI object detection.
 
+> **jfdid/frigate fork:** this checkout carries local changes on top of
+> upstream. Read `FORK.md` in the repo root before changing anything. It
+> lists every fork change, why it exists, and how to carry the changes to a
+> new upstream version. If `FORK.local.md` exists (it is never committed),
+> read it too: the maintainer's setup and rules.
+
 ## Project Overview
 
 Frigate NVR is a realtime object detection system for IP cameras that uses:
