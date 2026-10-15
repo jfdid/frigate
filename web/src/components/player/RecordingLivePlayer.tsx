@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { useTranslation } from "react-i18next";
+import { TransformComponent, TransformWrapper } from "react-zoom-pan-pinch";
 import LivePlayer from "./LivePlayer";
 import ActivityIndicator from "../indicators/activity-indicator";
 import { FrigateConfig } from "@/types/frigateConfig";
@@ -119,19 +120,33 @@ export default function RecordingLivePlayer({
       data-active={active}
       data-ready={ready}
     >
-      <LivePlayer
-        containerRef={containerRef}
-        className="size-full"
-        cameraConfig={cameraConfig}
-        streamName={streamName}
-        preferredLiveMode={preferredLiveMode}
-        showStillWithoutActivity={false}
-        useWebGL={false}
-        playInBackground={false}
-        playAudio={active}
-        onError={onError}
-        onLiveAspectChange={onLiveAspectChange}
-      />
+      {/* pinch or scroll to zoom and drag to pan, like the recording
+          player and the classic live page; kept while warming up, so a
+          zoom carries across leaving and returning to live */}
+      <TransformWrapper
+        minScale={1.0}
+        wheel={{ smoothStep: 0.005 }}
+        disabled={!active}
+      >
+        <TransformComponent
+          wrapperStyle={{ width: "100%", height: "100%" }}
+          contentStyle={{ width: "100%", height: "100%" }}
+        >
+          <LivePlayer
+            containerRef={containerRef}
+            className="size-full"
+            cameraConfig={cameraConfig}
+            streamName={streamName}
+            preferredLiveMode={preferredLiveMode}
+            showStillWithoutActivity={false}
+            useWebGL={false}
+            playInBackground={false}
+            playAudio={active}
+            onError={onError}
+            onLiveAspectChange={onLiveAspectChange}
+          />
+        </TransformComponent>
+      </TransformWrapper>
       {active && !ready && (
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/60 text-white">
           <ActivityIndicator className="text-white" />

@@ -98,6 +98,17 @@ const activeLivePlayer = (page: Page) =>
 /** Where the handle is, and the top of the timeline's scroll container. */
 async function measure(page: Page) {
   const handle = handleLocator(page);
+  // the timeline scrolls the handle into view after loading and after a
+  // release; a press measured mid-scroll lands beside the handle
+  let last = "";
+  await expect
+    .poll(async () => {
+      const now = JSON.stringify(await handle.boundingBox());
+      const settled = now == last;
+      last = now;
+      return settled;
+    })
+    .toBe(true);
   const box = await handle.boundingBox();
   // [role="scrollbar"] is the handlebar's own wrapper and moves with it
   const trackTop = await handle.evaluate(
@@ -295,6 +306,31 @@ test.describe("Recording live mode: desktop extras @medium", () => {
     await touch("touchEnd", trackTop - 20);
     await expect(activeLivePlayer(page)).toBeVisible();
     await expect(page).toHaveURL(/\/review/);
+  });
+
+  test("the live stream zooms with the scroll wheel", async ({
+    frigateApp,
+  }) => {
+    const page = frigateApp.page;
+    const stream = await openAtLiveEdge(frigateApp);
+    stream.release();
+    await goLiveByDrag(page);
+    await expect(activeLivePlayer(page)).toHaveAttribute("data-ready", "true");
+
+    const scale = () =>
+      activeLivePlayer(page)
+        .locator(".react-transform-component")
+        .evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a);
+    expect(await scale()).toBe(1);
+
+    const box = await activeLivePlayer(page).boundingBox();
+    if (!box) {
+      throw new Error("live player has no bounding box");
+    }
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -400);
+
+    await expect.poll(scale).toBeGreaterThan(1);
   });
 
   test("a line marks the live edge above the newest recording", async ({
