@@ -9,7 +9,10 @@
 import { test, expect, type FrigateApp } from "../fixtures/frigate-test";
 import { PLACEHOLDER_PNG } from "../helpers/api-mocker";
 
-const playbackTime = Math.floor(Date.now() / 1000) - 120;
+// midday, so dragging back from the live edge never crosses midnight: the
+// recording view only spans the current day
+const NOW = new Date(2026, 8, 2, 12, 30, 0);
+const playbackTime = Math.floor(NOW.getTime() / 1000) - 120;
 const FRAME_INTERVAL_S = 2;
 
 /** The newest cached frame served to the main camera, for assertions. */
@@ -104,6 +107,16 @@ async function openRecordingView(
   await frigateApp.goto(`/review?timestamp=front_door_${playbackTime}`);
 }
 
+/**
+ * The move listener is attached on the render after the press; a move sent
+ * sooner (no hand is that fast) would be lost, so wait for the drag state.
+ */
+async function waitForDragStart(page: FrigateApp["page"]) {
+  await expect(
+    page.locator('[role="scrollbar"] .cursor-grabbing').first(),
+  ).toBeAttached();
+}
+
 /** Drags the handlebar down in steps, asserting each step lands a new frame. */
 async function dragHandlebarExpectingFrames(
   frigateApp: FrigateApp,
@@ -112,6 +125,11 @@ async function dragHandlebarExpectingFrames(
   const page = frigateApp.page;
   const handle = page.locator('[role="scrollbar"] .rounded-full').first();
   await expect(handle).toBeVisible({ timeout: 15_000 });
+  // the scrub preview is driven through the main player's controller,
+  // which only exists once the player has a source to mount
+  await expect(page.locator("video").first()).toBeAttached({
+    timeout: 15_000,
+  });
   const box = await handle.boundingBox();
   if (!box) {
     throw new Error("handlebar has no bounding box");
@@ -131,14 +149,9 @@ async function dragHandlebarExpectingFrames(
 
   await page.mouse.move(x, y);
   await page.mouse.down();
+  await waitForDragStart(page);
   let previous = await mainFrame();
   for (let i = 1; i <= 5; i++) {
-    // useDraggableElement commits the drag time at most every 100ms and
-    // holds the newest value until the next move or the release, so a
-    // step landing inside that window would leave the preview on the
-    // previous frame while the handle sits still. That trailing value is
-    // a separate upstream issue; step past the window to test the rest
-    await page.clock.runFor(150);
     await page.mouse.move(x, y + i * 30, { steps: 3 });
     // still held: the frame has to change before the release
     await expect.poll(mainFrame, { timeout: 3_000 }).not.toBe(previous);
@@ -168,7 +181,7 @@ async function runScrubCase(
   }: { afterLiveEdgeGrows: boolean; tickWhileHeld?: boolean },
 ) {
   // a controllable clock lets the live edge tick without a real wait
-  await frigateApp.page.clock.install();
+  await frigateApp.page.clock.install({ time: NOW });
   await frigateApp.installDefaults();
   await openRecordingView(frigateApp);
 
@@ -232,7 +245,7 @@ test.describe("Recording scrub preview past the newest frame: desktop @medium", 
     }
 
     const page = frigateApp.page;
-    await page.clock.install();
+    await page.clock.install({ time: NOW });
     await frigateApp.installDefaults();
     // a still scene only caches a frame every 30s, so the newest one can be
     // well behind the live edge
@@ -262,6 +275,7 @@ test.describe("Recording scrub preview past the newest frame: desktop @medium", 
     const x = box.x + box.width / 2;
     await page.mouse.move(x, box.y + box.height / 2);
     await page.mouse.down();
+    await waitForDragStart(page);
     await page.mouse.move(x, 5);
 
     await expect
@@ -274,6 +288,67 @@ test.describe("Recording scrub preview past the newest frame: desktop @medium", 
         ),
       )
       .toContain(`preview_front_door-${newestMainFrame}.webp`);
+    await page.mouse.up();
+  });
+});
+
+test.describe("Recording scrub preview hold: desktop @medium", () => {
+  test("the preview catches up when the handle stops moving", async ({
+    frigateApp,
+  }) => {
+    if (frigateApp.isMobile) {
+      test.skip();
+      return;
+    }
+
+    const page = frigateApp.page;
+    await page.clock.install({ time: NOW });
+    await frigateApp.installDefaults();
+    await openRecordingView(frigateApp);
+
+    const handle = page.locator('[role="scrollbar"] .rounded-full').first();
+    await expect(handle).toBeVisible({ timeout: 15_000 });
+    const box = await handle.boundingBox();
+    if (!box) {
+      throw new Error("handlebar has no bounding box");
+    }
+
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await waitForDragStart(page);
+
+    // two moves inside one 100ms commit window: the first lands, the
+    // second is held back, then the handle sits still past the window
+    await page.mouse.move(x, y + 20);
+    await page.mouse.move(x, y + 300);
+    await page.clock.runFor(300);
+
+    // the handle's own label follows the pointer every frame, though only
+    // to its segment
+    const handleTime = await page.evaluate(() => {
+      const label =
+        document.querySelector('[role="scrollbar"] .rounded-full > div')
+          ?.textContent ?? "";
+      return Date.parse(`${new Date().toDateString()} ${label}`) / 1000;
+    });
+    expect(handleTime).not.toBeNaN();
+
+    const shownFrameTime = () =>
+      page.evaluate(() => {
+        const src =
+          Array.from(document.querySelectorAll("img"))
+            .map((img) => img.getAttribute("src") ?? "")
+            .find((s) => s.includes("preview_front_door-")) ?? "";
+        return Number(src.match(/preview_front_door-(\d+)\.webp/)?.[1] ?? 0);
+      });
+
+    // within one 30s segment of the label; a held-back value would still
+    // show the first move, minutes away
+    await expect
+      .poll(async () => Math.abs((await shownFrameTime()) - handleTime))
+      .toBeLessThanOrEqual(30);
     await page.mouse.up();
   });
 });
@@ -299,7 +374,7 @@ test.describe("Recording live edge: desktop @medium", () => {
       }
     });
 
-    await page.clock.install();
+    await page.clock.install({ time: NOW });
     await frigateApp.installDefaults();
     await openRecordingView(frigateApp);
 
