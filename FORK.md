@@ -429,11 +429,10 @@ npx playwright test --config e2e/playwright.config.ts e2e/specs/recording-live-e
 npx tsc --noEmit && npm run lint && npm run e2e:lint
 ```
 
-Last full run (2026-10-15, after the Camera view): 685 passed, 1 failed, 184
-skipped (the skips are the desktop/mobile split, by design). The failure
-was `live-webrtc-availability.spec.ts` "desktop: saving group streaming
-settings keeps an unavailable WebRTC choice", which passed 30 of 30 on
-rerun: a load flake in a dashboard menu test that doesn't open a camera.
+Last full run (2026-10-15, after live zoom): 687 passed, 0 failed, 185
+skipped (the skips are the desktop/mobile split, by design). An earlier
+run had one load flake in `live-webrtc-availability.spec.ts` (a dashboard
+menu test that doesn't open a camera; 30 of 30 on rerun).
 Known upstream flake: `masonry-live-grid.spec.ts` "tiles render at their
 camera's natural aspect ratio" fails about 1 run in 3, on unmodified
 upstream `dev` too.
