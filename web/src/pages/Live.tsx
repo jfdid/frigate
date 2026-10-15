@@ -9,6 +9,8 @@ import LiveDashboardView from "@/views/live/LiveDashboardView";
 import { useTranslation } from "react-i18next";
 
 import { useEffect, useMemo, useRef } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { RecordingStartingPoint } from "@/types/record";
 import useSWR from "swr";
 import { useAllowedCameras } from "@/hooks/use-allowed-cameras";
 import { useHasFullCameraAccess } from "@/hooks/use-has-full-camera-access";
@@ -149,6 +151,35 @@ function Live() {
     return undefined;
   }, [config, selectedCameraName, allowedCameras]);
 
+  // fork: opening one camera (a dashboard tile, Birdseye, a /#camera link)
+  // goes to the Camera view, the recording view in live mode, so live and
+  // history are one screen. `/?controls#camera` keeps this classic live
+  // page for what the Camera view lacks: PTZ, two-way talk, the toggles
+
+  const location = useLocation();
+  const navigate = useNavigate();
+  const showControls = new URLSearchParams(location.search).has("controls");
+
+  useEffect(() => {
+    if (!selectedCamera || showControls) {
+      return;
+    }
+
+    navigate("/review", {
+      // back from the Camera view returns to the dashboard
+      replace: true,
+      state: {
+        severity: "alert",
+        recording: {
+          camera: selectedCamera.name,
+          startTime: Date.now() / 1000 - 30,
+          severity: "alert",
+          live: true,
+        } as RecordingStartingPoint,
+      },
+    });
+  }, [selectedCamera, showControls, navigate]);
+
   return (
     <div className="size-full" ref={mainRef}>
       {selectedCameraName === "birdseye" &&
@@ -161,14 +192,17 @@ function Live() {
           onSelectCamera={setSelectedCameraName}
         />
       ) : selectedCamera ? (
-        <LiveCameraView
-          key={selectedCameraName}
-          config={config}
-          camera={selectedCamera}
-          supportsFullscreen={supportsFullScreen}
-          fullscreen={fullscreen}
-          toggleFullscreen={toggleFullscreen}
-        />
+        // redirecting to the Camera view unless the controls were asked for
+        showControls && (
+          <LiveCameraView
+            key={selectedCameraName}
+            config={config}
+            camera={selectedCamera}
+            supportsFullscreen={supportsFullScreen}
+            fullscreen={fullscreen}
+            toggleFullscreen={toggleFullscreen}
+          />
+        )
       ) : (
         <LiveDashboardView
           cameras={cameras}

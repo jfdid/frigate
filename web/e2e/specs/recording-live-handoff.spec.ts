@@ -159,6 +159,8 @@ for (const mobile of [false, true]) {
         "true",
       );
       await expect(page.getByText("Loading live stream…")).toBeHidden();
+      // the handle says live rather than a time that lags the picture
+      await expect(page.getByTestId("handlebar-label")).toHaveText("Live");
       // started with sound
       await expect
         .poll(() =>
@@ -213,6 +215,7 @@ for (const mobile of [false, true]) {
       await page.mouse.move(x, y + 80, { steps: 8 });
       // scrubbing recordings again while the handle is still held
       await expect(activeLivePlayer(page)).toHaveCount(0);
+      await expect(page.getByTestId("handlebar-label")).toHaveCount(0);
       await page.mouse.up();
 
       await expect(activeLivePlayer(page)).toHaveCount(0);

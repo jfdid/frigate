@@ -125,7 +125,7 @@ test.describe("Auto live stream @mobile", () => {
     await frigateApp.installDefaults({ config: CONFIG });
     const opened = await mockGo2rtc(frigateApp.page, ["front_door"]);
 
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     await expect
       .poll(() => opened, { timeout: 10_000 })
@@ -163,7 +163,7 @@ test.describe("Transcoded live stream @mobile", () => {
     await writeIdb(frigateApp.page, {
       [STREAM_KEY]: "front_door_transcode_720p",
     });
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     await expect
       .poll(() => opened, { timeout: 10_000 })
@@ -182,7 +182,7 @@ test.describe("Auto live stream selector", () => {
     await frigateApp.installDefaults({ config: CONFIG });
     const opened = await mockGo2rtc(frigateApp.page);
 
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     await expect.poll(() => opened[0], { timeout: 10_000 }).toBe("front_door");
     const menu = await openDesktopSettings(frigateApp.page);
@@ -193,7 +193,7 @@ test.describe("Auto live stream selector", () => {
     await frigateApp.installDefaults({ config: CONFIG });
     const opened = await mockGo2rtc(frigateApp.page, ["front_door"]);
 
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     await expect
       .poll(() => opened, { timeout: 10_000 })
@@ -211,7 +211,7 @@ test.describe("Auto live stream selector", () => {
     await frigateApp.installDefaults({ config: CONFIG });
     const opened = await mockGo2rtc(frigateApp.page, ["front_door"]);
 
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     await expect
       .poll(() => opened, { timeout: 10_000 })
@@ -233,7 +233,7 @@ test.describe("Auto live stream selector", () => {
 
     await frigateApp.goto("/");
     await writeIdb(frigateApp.page, { [STREAM_KEY]: "front_door" });
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     const menu = await openDesktopSettings(frigateApp.page);
     await expect(
@@ -248,7 +248,7 @@ test.describe("Auto live stream selector", () => {
 
     await frigateApp.goto("/");
     await writeIdb(frigateApp.page, { [STREAM_KEY]: "front_door_sub" });
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     const menu = await openDesktopSettings(frigateApp.page);
     await expect(streamTrigger(menu)).toHaveText("Sub");
@@ -264,7 +264,7 @@ test.describe("Auto live stream selector", () => {
 
     await frigateApp.goto("/");
     await writeIdb(frigateApp.page, { [STREAM_KEY]: "removed_stream" });
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     await expect.poll(() => readIdb(frigateApp.page, STREAM_KEY)).toBeNull();
     await expect.poll(() => opened[0], { timeout: 10_000 }).toBe("front_door");
@@ -274,7 +274,7 @@ test.describe("Auto live stream selector", () => {
     await frigateApp.installDefaults({ config: CONFIG });
     await mockGo2rtc(frigateApp.page);
 
-    await frigateApp.goto("/#backyard");
+    await frigateApp.goto("/?controls#backyard");
 
     const menu = await openDesktopSettings(frigateApp.page);
     await streamTrigger(menu).click();
@@ -295,7 +295,7 @@ test.describe("Auto live stream selector", () => {
       "front_door_sub",
     ]);
 
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     await expect
       .poll(() => opened, { timeout: 10_000 })

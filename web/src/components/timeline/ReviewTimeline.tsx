@@ -30,6 +30,8 @@ export type ReviewTimelineProps = {
   handlebarTime?: number;
   setHandlebarTime?: React.Dispatch<React.SetStateAction<number>>;
   onHandlebarDraggingChange?: (isDragging: boolean) => void;
+  // shown on the handlebar instead of its time, e.g. while showing live
+  handlebarLabel?: string;
   onlyInitialHandlebarScroll?: boolean;
   exportStartTime?: number;
   exportEndTime?: number;
@@ -58,6 +60,7 @@ export function ReviewTimeline({
   handlebarTime,
   setHandlebarTime,
   onHandlebarDraggingChange,
+  handlebarLabel,
   onlyInitialHandlebarScroll = false,
   exportStartTime,
   setExportStartTime,
@@ -398,8 +401,16 @@ export function ReviewTimeline({
                     >
                       <div
                         ref={handlebarTimeRef}
-                        className={`pointer-events-none text-white ${textSizeClasses("handlebar")} z-10`}
+                        className={`pointer-events-none text-white ${textSizeClasses("handlebar")} z-10 ${handlebarLabel ? "hidden" : ""}`}
                       ></div>
+                      {handlebarLabel && (
+                        <div
+                          className={`pointer-events-none text-white ${textSizeClasses("handlebar")} z-10 font-semibold`}
+                          data-testid="handlebar-label"
+                        >
+                          {handlebarLabel}
+                        </div>
+                      )}
                     </div>
                     <div
                       className={`absolute h-[4px] w-full bg-destructive ${isDraggingHandlebar && isMobile ? "top-1" : "top-1/2 -translate-y-1/2 transform"}`}

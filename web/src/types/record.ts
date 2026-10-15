@@ -41,6 +41,8 @@ export type RecordingStartingPoint = {
   severity: ReviewSeverity;
   timelineType?: TimelineType;
   navigationSource?: "shared-link";
+  // fork: open the Camera view already showing the live stream
+  live?: boolean;
 };
 
 export type RecordingPlayerError = "stalled" | "startup";

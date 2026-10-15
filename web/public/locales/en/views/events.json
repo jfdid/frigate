@@ -96,6 +96,11 @@
   "liveEdge": {
     "goLive": "Go live",
     "live": "LIVE",
-    "loadingStream": "Loading live stream…"
+    "loadingStream": "Loading live stream…",
+    "handlebar": "Live"
+  },
+  "cameraView": {
+    "controls": "Controls",
+    "controlsAria": "Open the camera's live controls: PTZ, two-way talk and settings"
   }
 }

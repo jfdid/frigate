@@ -29,13 +29,14 @@ test.describe("Live Dashboard @critical", () => {
     }
   });
 
-  test("clicking a camera card opens the single-camera view via hash", async ({
+  test("clicking a camera card opens the Camera view", async ({
     frigateApp,
   }) => {
     await frigateApp.goto("/");
     const live = new LivePage(frigateApp.page, !frigateApp.isMobile);
     await live.cameraCard("front_door").first().click({ timeout: 10_000 });
-    await expect(frigateApp.page).toHaveURL(/#front_door/);
+    // fork: opening a camera goes to the Camera view
+    await expect(frigateApp.page).toHaveURL(/\/review/);
   });
 
   test("birdseye route renders without crash", async ({ frigateApp }) => {
@@ -60,14 +61,14 @@ test.describe("Live Single Camera — desktop controls @critical", () => {
   test("single-camera view shows Back and History buttons", async ({
     frigateApp,
   }) => {
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
     const live = new LivePage(frigateApp.page, true);
     await expect(live.backButton).toBeVisible({ timeout: 5_000 });
     await expect(live.historyButton).toBeVisible();
   });
 
   test("feature toggles render (at least 3)", async ({ frigateApp }) => {
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
     const live = new LivePage(frigateApp.page, true);
     // Wait for the single-camera header to render before counting toggles.
     await expect(live.backButton).toBeVisible({ timeout: 5_000 });
@@ -80,7 +81,7 @@ test.describe("Live Single Camera — desktop controls @critical", () => {
     frigateApp,
   }) => {
     await installWsFrameCapture(frigateApp.page);
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
     const live = new LivePage(frigateApp.page, true);
     // Wait for feature toggles to render (WS camera_activity must arrive first).
     await expect(live.activeFeatureToggles.first()).toBeVisible({
@@ -116,7 +117,7 @@ test.describe("Live Single Camera — desktop controls @critical", () => {
   test("settings gear opens a dropdown with Stream/Play menu items", async ({
     frigateApp,
   }) => {
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
     // Wait for the single-camera view to render — use the Back button
     // as a deterministic marker.
     const live = new LivePage(frigateApp.page, true);
@@ -194,7 +195,7 @@ test.describe("Live PTZ preset dropdown @critical", () => {
     );
 
     await installWsFrameCapture(frigateApp.page);
-    await frigateApp.goto(`/#${PTZ_CAMERA}`);
+    await frigateApp.goto(`/?controls#${PTZ_CAMERA}`);
 
     const presetTrigger = frigateApp.page.getByRole("button", {
       name: /presets/i,
@@ -254,12 +255,13 @@ test.describe("Live mobile layout @critical @mobile", () => {
     });
   });
 
-  test("mobile camera tap opens single view", async ({ frigateApp }) => {
+  test("mobile camera tap opens the Camera view", async ({ frigateApp }) => {
     test.skip(!frigateApp.isMobile, "Mobile-only");
     await frigateApp.goto("/");
     const live = new LivePage(frigateApp.page, false);
     await live.cameraCard("front_door").first().click({ timeout: 10_000 });
-    await expect(frigateApp.page).toHaveURL(/#front_door/);
+    // fork: opening a camera goes to the Camera view
+    await expect(frigateApp.page).toHaveURL(/\/review/);
   });
 
   test("mobile onvif single-camera view loads without freezing body", async ({
@@ -282,7 +284,7 @@ test.describe("Live mobile layout @critical @mobile", () => {
         },
       }),
     );
-    await frigateApp.goto(`/#${PTZ_CAMERA}`);
+    await frigateApp.goto(`/?controls#${PTZ_CAMERA}`);
     await expectBodyInteractive(frigateApp.page);
     await expect(frigateApp.page.locator("body")).toBeVisible();
   });
