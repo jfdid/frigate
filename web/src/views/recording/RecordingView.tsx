@@ -249,6 +249,13 @@ export function RecordingView({
     [timeRange.after, liveEdgeBefore],
   );
 
+  // live handoff: dragging the handlebar to the top of the timeline and
+  // releasing it there opens the live view, like the Live button. Only
+  // while following the live edge, where the top of the track is now
+  const goLive = useCallback(() => {
+    navigate(`/#${mainCamera}`);
+  }, [navigate, mainCamera]);
+
   // timeline
 
   const [recording] = useOverlayState<RecordingStartingPoint>(
@@ -1213,6 +1220,13 @@ export function RecordingView({
                 : setExportRange
             }
             onAnalysisOpen={onAnalysisOpen}
+            onGoLive={
+              followsLiveEdge &&
+              exportRange == undefined &&
+              debugReplayRange == undefined
+                ? goLive
+                : undefined
+            }
             isPlaying={mainControllerRef?.current?.isPlaying() ?? false}
           />
         </div>
@@ -1237,7 +1251,18 @@ type TimelineProps = {
   setScrubbing: React.Dispatch<React.SetStateAction<boolean>>;
   setExportRange: React.Dispatch<React.SetStateAction<TimeRange | undefined>>;
   onAnalysisOpen: (open: boolean) => void;
+  // when set, releasing the handlebar while it is pinned at the top of the
+  // track (the live edge) hands off to the live view; see LIVE_HOT_ZONE_PX
+  onGoLive?: () => void;
 };
+
+// the handlebar can't be dragged into the top 1.5 segments of the track
+// (1.5 x 8px, see useDraggableElement), so a pointer above this line while
+// the track is scrolled to its top means the handle is pinned at the live
+// edge. Measured from the pointer rather than the handle time because a
+// drag that hits that limit stops reporting new times.
+const LIVE_HOT_ZONE_PX = 12;
+
 function Timeline({
   contentRef,
   timelineRef,
@@ -1254,10 +1279,82 @@ function Timeline({
   setScrubbing,
   setExportRange,
   onAnalysisOpen,
+  onGoLive,
 }: TimelineProps) {
   const { t } = useTranslation(["views/events"]);
   const internalTimelineRef = useRef<HTMLDivElement>(null);
   const selectedTimelineRef = timelineRef || internalTimelineRef;
+
+  // live handoff: track the pointer while the handlebar is held, and go
+  // live if it is released inside the hot zone at the top of the track
+
+  const [handlebarHeld, setHandlebarHeld] = useState(false);
+  const [inLiveHotZone, setInLiveHotZone] = useState(false);
+  const inLiveHotZoneRef = useRef(false);
+  const onGoLiveRef = useRef(onGoLive);
+
+  useEffect(() => {
+    onGoLiveRef.current = onGoLive;
+  }, [onGoLive]);
+
+  const updateLiveHotZone = useCallback((inZone: boolean) => {
+    inLiveHotZoneRef.current = inZone;
+    setInLiveHotZone(inZone);
+  }, []);
+
+  // stable, because the timeline reports the drag state again whenever
+  // this callback changes identity
+  const onHandlebarDraggingChange = useCallback(
+    (dragging: boolean) => {
+      setScrubbing(dragging);
+      setHandlebarHeld(dragging);
+
+      if (dragging) {
+        return;
+      }
+
+      const goLive = inLiveHotZoneRef.current;
+      updateLiveHotZone(false);
+
+      if (goLive) {
+        onGoLiveRef.current?.();
+      }
+    },
+    [setScrubbing, updateLiveHotZone],
+  );
+
+  useEffect(() => {
+    if (!handlebarHeld || !onGoLive) {
+      return;
+    }
+
+    const onMove = (clientY: number) => {
+      const timeline = selectedTimelineRef.current;
+
+      if (!timeline) {
+        return;
+      }
+
+      updateLiveHotZone(
+        timeline.scrollTop <= 1 &&
+          clientY < timeline.getBoundingClientRect().top + LIVE_HOT_ZONE_PX,
+      );
+    };
+    const onMouseMove = (e: MouseEvent) => onMove(e.clientY);
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length > 0) {
+        onMove(e.touches[0].clientY);
+      }
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("touchmove", onTouchMove);
+    };
+  }, [handlebarHeld, onGoLive, selectedTimelineRef, updateLiveHotZone]);
 
   // the `timeRange` prop now already is the growing live-edge value
   // (RecordingView passes effectiveTimeRange here, not its raw timeRange
@@ -1432,6 +1529,17 @@ function Timeline({
         </GenAISummaryDialog>
       )}
 
+      {inLiveHotZone && (
+        <div
+          className="pointer-events-none absolute inset-x-0 top-1 z-30 flex justify-center"
+          data-testid="live-hot-zone"
+        >
+          <div className="flex items-center gap-1.5 rounded-md bg-destructive px-2 py-0.5 text-xs font-medium text-white shadow-md">
+            <span className="size-1.5 animate-pulse rounded-full bg-white" />
+            {t("liveEdge.goLive")}
+          </div>
+        </div>
+      )}
       {timelineType != "detail" && (
         <>
           <div className="pointer-events-none absolute inset-x-0 top-0 z-20 h-[30px] w-full bg-gradient-to-b from-secondary to-transparent"></div>
@@ -1464,7 +1572,7 @@ function Timeline({
             noRecordingRanges={noRecordings ?? []}
             subOnlyRanges={subOnlyRanges}
             contentRef={contentRef}
-            onHandlebarDraggingChange={setScrubbing}
+            onHandlebarDraggingChange={onHandlebarDraggingChange}
             isZooming={isZooming}
             zoomDirection={zoomDirection}
             onZoomChange={handleZoomChange}
