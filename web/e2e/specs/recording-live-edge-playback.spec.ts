@@ -14,6 +14,9 @@ import { fileURLToPath } from "node:url";
 import { test, expect, type FrigateApp } from "../fixtures/frigate-test";
 
 const SEGMENT_S = 2;
+
+// midday, so the recording view's day never starts inside the test window
+const NOW = new Date(2026, 8, 2, 12, 30, 0);
 const SEGMENT = readFileSync(
   fileURLToPath(new URL("../fixtures/media/recording-2s.ts", import.meta.url)),
 );
@@ -124,11 +127,11 @@ async function mockRecordings(frigateApp: FrigateApp) {
 
 async function openAtLiveEdge(frigateApp: FrigateApp, secondsBack: number) {
   const page = frigateApp.page;
-  await page.clock.install();
+  await page.clock.install({ time: NOW });
   await frigateApp.installDefaults();
   await mockRecordings(frigateApp);
 
-  const playbackTime = Math.floor(Date.now() / 1000) - secondsBack;
+  const playbackTime = Math.floor(NOW.getTime() / 1000) - secondsBack;
   await frigateApp.goto(`/review?timestamp=front_door_${playbackTime}`);
 
   await expect(

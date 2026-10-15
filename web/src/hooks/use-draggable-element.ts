@@ -71,6 +71,26 @@ function useDraggableElement({
   const [initialClickAdjustment, setInitialClickAdjustment] = useState(0);
   const lastDragTimeCommitRef = useRef(0);
   const pendingDragTimeRef = useRef<number | null>(null);
+  const trailingCommitRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+
+  // the trailing flush fires after the render that scheduled it, so it
+  // calls the setter from the latest render rather than a stale closure
+  const setDraggableElementTimeRef = useRef(setDraggableElementTime);
+
+  useEffect(() => {
+    setDraggableElementTimeRef.current = setDraggableElementTime;
+  }, [setDraggableElementTime]);
+
+  useEffect(
+    () => () => {
+      if (trailingCommitRef.current !== undefined) {
+        clearTimeout(trailingCommitRef.current);
+      }
+    },
+    [],
+  );
   const [elementScrollIntoView, setElementScrollIntoView] = useState(true);
   const [scrollEdgeSize, setScrollEdgeSize] = useState<number>();
   const [fullTimelineHeight, setFullTimelineHeight] = useState<number>();
@@ -165,6 +185,11 @@ function useDraggableElement({
       if (isDragging) {
         setIsDragging(false);
         setInitialClickAdjustment(0);
+
+        if (trailingCommitRef.current !== undefined) {
+          clearTimeout(trailingCommitRef.current);
+          trailingCommitRef.current = undefined;
+        }
 
         if (pendingDragTimeRef.current !== null && setDraggableElementTime) {
           setDraggableElementTime(pendingDragTimeRef.current);
@@ -395,6 +420,26 @@ function useDraggableElement({
             // Hold the newest value; handleMouseUp flushes it so the
             // release still lands exactly where the handle was dropped.
             pendingDragTimeRef.current = newTime;
+
+            // a handle that stops moving gets no further events, so flush
+            // the held value once the window closes instead of leaving the
+            // preview on an earlier position until the next move
+            if (trailingCommitRef.current === undefined) {
+              trailingCommitRef.current = setTimeout(
+                () => {
+                  trailingCommitRef.current = undefined;
+
+                  if (pendingDragTimeRef.current !== null) {
+                    lastDragTimeCommitRef.current = performance.now();
+                    setDraggableElementTimeRef.current?.(
+                      pendingDragTimeRef.current,
+                    );
+                    pendingDragTimeRef.current = null;
+                  }
+                },
+                DRAG_STATE_COMMIT_MS - (now - lastDragTimeCommitRef.current),
+              );
+            }
           }
         }
 
