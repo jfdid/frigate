@@ -12,7 +12,16 @@ import { PLACEHOLDER_PNG } from "../helpers/api-mocker";
 const playbackTime = Math.floor(Date.now() / 1000) - 120;
 const FRAME_INTERVAL_S = 2;
 
-async function openRecordingView(frigateApp: FrigateApp) {
+/** The newest cached frame served to the main camera, for assertions. */
+let newestMainFrame = 0;
+
+async function openRecordingView(
+  frigateApp: FrigateApp,
+  {
+    frameIntervalS = FRAME_INTERVAL_S,
+    framesStopBeforeEndS = 0,
+  }: { frameIntervalS?: number; framesStopBeforeEndS?: number } = {},
+) {
   await frigateApp.page.route("**/api/*/recordings**", (route) =>
     route.fulfill({ json: [] }),
   );
@@ -78,8 +87,12 @@ async function openRecordingView(frigateApp: FrigateApp) {
     // the page clock runs ahead of this process once fast-forwarded, so
     // cover the whole requested window instead of clamping to real now
     const frames: string[] = [];
-    for (let t = Number(start); t <= Number(end); t += FRAME_INTERVAL_S) {
+    const last = Number(end) - framesStopBeforeEndS;
+    for (let t = Number(start); t <= last; t += frameIntervalS) {
       frames.push(`preview_${camera}-${t}.webp`);
+      if (camera == "front_door") {
+        newestMainFrame = t;
+      }
     }
     return route.fulfill({ json: frames });
   });
@@ -206,6 +219,62 @@ test.describe("Recording scrub preview: desktop @medium", () => {
       afterLiveEdgeGrows: false,
       tickWhileHeld: true,
     });
+  });
+});
+
+test.describe("Recording scrub preview past the newest frame: desktop @medium", () => {
+  test("scrubbing past the newest cached frame shows that frame", async ({
+    frigateApp,
+  }) => {
+    if (frigateApp.isMobile) {
+      test.skip();
+      return;
+    }
+
+    const page = frigateApp.page;
+    await page.clock.install();
+    await frigateApp.installDefaults();
+    // a still scene only caches a frame every 30s, so the newest one can be
+    // well behind the live edge
+    await openRecordingView(frigateApp, {
+      frameIntervalS: 10,
+      framesStopBeforeEndS: 40,
+    });
+
+    const handle = page.locator('[role="scrollbar"] .rounded-full').first();
+    await expect(handle).toBeVisible({ timeout: 15_000 });
+
+    // the handle stops 1.5 segments below the top of the track, which at
+    // the default 30s zoom is still before the newest frame; zoom in to
+    // 5s segments so the top of its range is past it
+    const zoomIn = page.locator("div.absolute.z-30 > button").nth(1);
+    for (let i = 0; i < 2; i++) {
+      await zoomIn.click();
+    }
+    await expect(zoomIn).toBeDisabled();
+
+    const box = await handle.boundingBox();
+    if (!box) {
+      throw new Error("handlebar has no bounding box");
+    }
+
+    // one move straight to the top of the track, past the newest frame
+    const x = box.x + box.width / 2;
+    await page.mouse.move(x, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(x, 5);
+
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            Array.from(document.querySelectorAll("img"))
+              .map((img) => img.getAttribute("src") ?? "")
+              .find((src) => src.includes("preview_front_door-")) ?? "",
+        ),
+      )
+      .toContain(`preview_front_door-${newestMainFrame}.webp`);
+    await page.mouse.up();
   });
 });
 

@@ -577,6 +577,11 @@ function PreviewFramesPlayer({
   );
 }
 
+// how far past the newest cached frame a scrub still shows it; the preview
+// writer caches at least one frame every 30s while the camera is up, plus
+// the frames listing refreshes on the 15s live edge tick
+const NEWEST_FRAME_REACH_S = 60;
+
 class PreviewFramesController extends PreviewController {
   imgController: MutableRefObject<HTMLImageElement | null>;
   frameTimes: number[];
@@ -601,9 +606,17 @@ class PreviewFramesController extends PreviewController {
       return false;
     }
 
-    const frame = this.frameTimes.find((p) => {
-      return time <= p;
-    });
+    // past the newest cached frame (a still scene only caches one every
+    // 30s, so it can trail the live edge) show that frame rather than
+    // leaving whatever an earlier scrub position put up
+    const newest = this.frameTimes.at(-1);
+    const frame =
+      this.frameTimes.find((p) => {
+        return time <= p;
+      }) ??
+      (newest !== undefined && time - newest <= NEWEST_FRAME_REACH_S
+        ? newest
+        : undefined);
 
     if (!frame) {
       return false;
