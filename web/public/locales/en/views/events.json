@@ -94,6 +94,8 @@
     "cropDesc": "Zoom previews into the selected filter areas instead of showing the full frame."
   },
   "liveEdge": {
-    "goLive": "Go live"
+    "goLive": "Go live",
+    "live": "LIVE",
+    "loadingStream": "Loading live stream…"
   }
 }

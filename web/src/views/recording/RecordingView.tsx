@@ -31,6 +31,7 @@ import {
 import { findChunkIndex, getChunkedTimeDay } from "@/utils/timelineUtil";
 import {
   MutableRefObject,
+  RefObject,
   useCallback,
   useEffect,
   useMemo,
@@ -72,6 +73,7 @@ import { useTimezone } from "@/hooks/use-date-utils";
 import { useTimelineZoom } from "@/hooks/use-timeline-zoom";
 import { useTranslation } from "react-i18next";
 import { useTimelineUtils } from "@/hooks/use-timeline-utils";
+import RecordingLivePlayer from "@/components/player/RecordingLivePlayer";
 import {
   Tooltip,
   TooltipContent,
@@ -207,6 +209,12 @@ export function RecordingView({
   // (see the live-edge-handoff branch notes); this piece does not try to
   // hide or shift across it.
   const RECORDING_INGEST_LAG_S = 15;
+  // playback ending within this much of the live edge goes live
+  const AUTO_LIVE_REACH_S = 60;
+  // the live stream connects ahead of time once the playhead is this close
+  // to the live edge, and stays connected this long after leaving it
+  const LIVE_WARM_REACH_S = 45;
+  const LIVE_WARM_LINGER_MS = 30_000;
 
   // declared here rather than with the rest of the scrubbing state below
   // because the live edge has to hold still while the handlebar is down
@@ -248,13 +256,6 @@ export function RecordingView({
     () => ({ after: timeRange.after, before: liveEdgeBefore }),
     [timeRange.after, liveEdgeBefore],
   );
-
-  // live handoff: dragging the handlebar to the top of the timeline and
-  // releasing it there opens the live view, like the Live button. Only
-  // while following the live edge, where the top of the track is now
-  const goLive = useCallback(() => {
-    navigate(`/#${mainCamera}`);
-  }, [navigate, mainCamera]);
 
   // timeline
 
@@ -392,6 +393,115 @@ export function RecordingView({
   const [currentTime, setCurrentTime] = useState<number>(startTime);
   const [playerTime, setPlayerTime] = useState(startTime);
 
+  // live mode (piece 3 of the live edge): the main player area swaps the
+  // recording player for the camera's live stream without leaving this
+  // view. Entered by releasing the handlebar at the top of the timeline or
+  // by playback running into the newest footage; left by dragging the
+  // handle down or by anything else that moves it (a timeline tap, the
+  // clip buttons, a seek). While live the recording player stays mounted,
+  // paused and covered, in its scrubbing state, so leaving shows preview
+  // frames at once and a live edge rebuild never starts it.
+
+  const liveAllowed =
+    followsLiveEdge &&
+    exportRange == undefined &&
+    debugReplayRange == undefined;
+  const [isLive, setIsLive] = useState(false);
+  const isLiveRef = useRef(false);
+  // the handle time live mode set; any other value means something moved it
+  const livePinnedTimeRef = useRef<number | undefined>(undefined);
+
+  const pinLiveTime = useCallback(() => {
+    livePinnedTimeRef.current = liveEdgeBefore;
+    setCurrentTime(liveEdgeBefore);
+  }, [liveEdgeBefore]);
+
+  const goLive = useCallback(() => {
+    if (!liveAllowed) {
+      return;
+    }
+
+    isLiveRef.current = true;
+    setIsLive(true);
+    mainControllerRef.current?.pause();
+    pinLiveTime();
+  }, [liveAllowed, pinLiveTime]);
+
+  const leaveLive = useCallback(() => {
+    isLiveRef.current = false;
+    livePinnedTimeRef.current = undefined;
+    setIsLive(false);
+  }, []);
+
+  // keep the handle at the top of the track as the live edge grows
+  useEffect(() => {
+    if (isLive && !scrubbing) {
+      pinLiveTime();
+    }
+  }, [isLive, scrubbing, pinLiveTime]);
+
+  useEffect(() => {
+    if (
+      isLive &&
+      !scrubbing &&
+      livePinnedTimeRef.current !== undefined &&
+      currentTime !== livePinnedTimeRef.current
+    ) {
+      leaveLive();
+    }
+  }, [currentTime, isLive, scrubbing, leaveLive]);
+
+  useEffect(() => {
+    if (!liveAllowed && isLive) {
+      leaveLive();
+    }
+  }, [liveAllowed, isLive, leaveLive]);
+
+  // playback that runs into the newest footage carries on live
+  const onRecordingClipEnded = useCallback(() => {
+    if (
+      liveAllowed &&
+      !isLiveRef.current &&
+      selectedRangeIdx == chunkedTimeRange.length - 1 &&
+      playerTime >= liveEdgeBefore - AUTO_LIVE_REACH_S
+    ) {
+      goLive();
+      return;
+    }
+
+    onClipEnded();
+  }, [
+    liveAllowed,
+    selectedRangeIdx,
+    chunkedTimeRange,
+    playerTime,
+    liveEdgeBefore,
+    goLive,
+    onClipEnded,
+  ]);
+
+  // connect the live stream ahead of time, muted and out of sight, while a
+  // switch is likely: live already, the handle held in the hot zone, or
+  // the playhead close to the newest footage. It stays connected a little
+  // longer after that, so going straight back live doesn't wait again.
+  const [liveHotZone, setLiveHotZone] = useState(false);
+  const nearLiveEdge =
+    liveAllowed &&
+    selectedRangeIdx == chunkedTimeRange.length - 1 &&
+    playerTime >= liveEdgeBefore - LIVE_WARM_REACH_S;
+  const wantLiveWarm = isLive || liveHotZone || nearLiveEdge;
+  const [liveWarm, setLiveWarm] = useState(false);
+
+  useEffect(() => {
+    if (wantLiveWarm) {
+      setLiveWarm(true);
+      return;
+    }
+
+    const timeout = setTimeout(() => setLiveWarm(false), LIVE_WARM_LINGER_MS);
+    return () => clearTimeout(timeout);
+  }, [wantLiveWarm]);
+
   const updateSelectedSegment = useCallback(
     (currentTime: number) => {
       const index = findChunkIndex(chunkedTimeRange, currentTime);
@@ -507,6 +617,11 @@ export function RecordingView({
   }, [navigate, recording?.navigationSource]);
 
   useEffect(() => {
+    // live mode owns the handle; leaving it runs this again to seek
+    if (isLive) {
+      return;
+    }
+
     if (!scrubbing && !selectingRange) {
       if (Math.abs(currentTime - playerTime) > 10) {
         if (
@@ -535,9 +650,10 @@ export function RecordingView({
       }
     }
     // we only want to seek when current time doesn't match the player update
-    // time, and once more on the way out of a range selection
+    // time, once more on the way out of a range selection, and on leaving
+    // live mode
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentTime, scrubbing, selectingRange]);
+  }, [currentTime, scrubbing, selectingRange, isLive]);
 
   const [fullResolution, setFullResolution] = useState<VideoResolutionType>({
     width: 0,
@@ -1105,13 +1221,20 @@ export function RecordingView({
                   }
                   fullscreen={fullscreen}
                   onTimestampUpdate={(timestamp) => {
+                    // the covered recording player reports its paused
+                    // position after live edge rebuilds; that must not
+                    // move the handle off live
+                    if (isLiveRef.current) {
+                      return;
+                    }
+
                     setPlayerTime(timestamp);
                     setCurrentTime(timestamp);
                     Object.values(previewRefs.current ?? {}).forEach((prev) =>
                       prev.scrubToTimestamp(Math.floor(timestamp)),
                     );
                   }}
-                  onClipEnded={onClipEnded}
+                  onClipEnded={onRecordingClipEnded}
                   onClipPrevious={onClipPrevious}
                   onSeekToTime={manuallySetCurrentTime}
                   onControllerReady={(controller) => {
@@ -1119,6 +1242,7 @@ export function RecordingView({
                   }}
                   isScrubbing={
                     scrubbing ||
+                    isLive ||
                     exportMode == "timeline" ||
                     exportMode == "timeline_multi" ||
                     debugReplayMode == "timeline"
@@ -1130,6 +1254,9 @@ export function RecordingView({
                   quality={playerQuality}
                   onAutoQualityChange={onAutoQualityChange}
                 />
+                {liveAllowed && (liveWarm || isLive) && (
+                  <RecordingLivePlayer camera={mainCamera} active={isLive} />
+                )}
               </div>
               {isDesktop && effectiveCameras.length > 1 && (
                 <div
@@ -1220,13 +1347,11 @@ export function RecordingView({
                 : setExportRange
             }
             onAnalysisOpen={onAnalysisOpen}
-            onGoLive={
-              followsLiveEdge &&
-              exportRange == undefined &&
-              debugReplayRange == undefined
-                ? goLive
-                : undefined
-            }
+            onGoLive={liveAllowed ? goLive : undefined}
+            isLive={isLive}
+            onLeaveLive={leaveLive}
+            onLiveHotZoneChange={setLiveHotZone}
+            showLiveMarker={followsLiveEdge}
             isPlaying={mainControllerRef?.current?.isPlaying() ?? false}
           />
         </div>
@@ -1252,8 +1377,16 @@ type TimelineProps = {
   setExportRange: React.Dispatch<React.SetStateAction<TimeRange | undefined>>;
   onAnalysisOpen: (open: boolean) => void;
   // when set, releasing the handlebar while it is pinned at the top of the
-  // track (the live edge) hands off to the live view; see LIVE_HOT_ZONE_PX
+  // track (the live edge) switches to the live stream; see LIVE_HOT_ZONE_PX.
+  // While live, releasing a handle that wasn't dragged away keeps it live
   onGoLive?: () => void;
+  // the live stream is showing; dragging the handle down leaves it
+  isLive?: boolean;
+  onLeaveLive?: () => void;
+  // the held handle entered or left the hot zone, to warm up the stream
+  onLiveHotZoneChange?: (inZone: boolean) => void;
+  // draw a line at the current real time, where the live stream sits
+  showLiveMarker?: boolean;
 };
 
 // the handlebar can't be dragged into the top 1.5 segments of the track
@@ -1262,6 +1395,10 @@ type TimelineProps = {
 // edge. Measured from the pointer rather than the handle time because a
 // drag that hits that limit stops reporting new times.
 const LIVE_HOT_ZONE_PX = 12;
+
+// while live, how far the pointer has to move down from where the drag
+// started before the view leaves the live stream for recordings
+const LEAVE_LIVE_DRAG_PX = 8;
 
 function Timeline({
   contentRef,
@@ -1280,26 +1417,43 @@ function Timeline({
   setExportRange,
   onAnalysisOpen,
   onGoLive,
+  isLive = false,
+  onLeaveLive,
+  onLiveHotZoneChange,
+  showLiveMarker = false,
 }: TimelineProps) {
   const { t } = useTranslation(["views/events"]);
   const internalTimelineRef = useRef<HTMLDivElement>(null);
   const selectedTimelineRef = timelineRef || internalTimelineRef;
 
-  // live handoff: track the pointer while the handlebar is held, and go
-  // live if it is released inside the hot zone at the top of the track
+  // live handoff: track the pointer while the handlebar is held. Released
+  // inside the hot zone at the top of the track, it goes live; while live,
+  // dragging it down leaves for recordings
 
   const [handlebarHeld, setHandlebarHeld] = useState(false);
   const [inLiveHotZone, setInLiveHotZone] = useState(false);
   const inLiveHotZoneRef = useRef(false);
+  const leftLiveRef = useRef(false);
+  const isLiveRef = useRef(isLive);
   const onGoLiveRef = useRef(onGoLive);
+  const onLeaveLiveRef = useRef(onLeaveLive);
+  const onLiveHotZoneChangeRef = useRef(onLiveHotZoneChange);
 
   useEffect(() => {
+    isLiveRef.current = isLive;
     onGoLiveRef.current = onGoLive;
-  }, [onGoLive]);
+    onLeaveLiveRef.current = onLeaveLive;
+    onLiveHotZoneChangeRef.current = onLiveHotZoneChange;
+  }, [isLive, onGoLive, onLeaveLive, onLiveHotZoneChange]);
 
   const updateLiveHotZone = useCallback((inZone: boolean) => {
+    if (inLiveHotZoneRef.current == inZone) {
+      return;
+    }
+
     inLiveHotZoneRef.current = inZone;
     setInLiveHotZone(inZone);
+    onLiveHotZoneChangeRef.current?.(inZone);
   }, []);
 
   // stable, because the timeline reports the drag state again whenever
@@ -1310,10 +1464,13 @@ function Timeline({
       setHandlebarHeld(dragging);
 
       if (dragging) {
+        leftLiveRef.current = false;
         return;
       }
 
-      const goLive = inLiveHotZoneRef.current;
+      // released in the zone, or a live handle that was never dragged away
+      const goLive =
+        inLiveHotZoneRef.current || (isLiveRef.current && !leftLiveRef.current);
       updateLiveHotZone(false);
 
       if (goLive) {
@@ -1328,6 +1485,8 @@ function Timeline({
       return;
     }
 
+    let startY: number | undefined;
+
     const onMove = (clientY: number) => {
       const timeline = selectedTimelineRef.current;
 
@@ -1335,10 +1494,21 @@ function Timeline({
         return;
       }
 
-      updateLiveHotZone(
+      startY ??= clientY;
+      const inZone =
         timeline.scrollTop <= 1 &&
-          clientY < timeline.getBoundingClientRect().top + LIVE_HOT_ZONE_PX,
-      );
+        clientY < timeline.getBoundingClientRect().top + LIVE_HOT_ZONE_PX;
+      updateLiveHotZone(inZone);
+
+      if (
+        isLiveRef.current &&
+        !leftLiveRef.current &&
+        !inZone &&
+        clientY - startY > LEAVE_LIVE_DRAG_PX
+      ) {
+        leftLiveRef.current = true;
+        onLeaveLiveRef.current?.();
+      }
     };
     const onMouseMove = (e: MouseEvent) => onMove(e.clientY);
     const onTouchMove = (e: TouchEvent) => {
@@ -1529,7 +1699,14 @@ function Timeline({
         </GenAISummaryDialog>
       )}
 
-      {inLiveHotZone && (
+      {showLiveMarker && timelineType == "timeline" && (
+        <LiveEdgeMarker
+          timelineRef={selectedTimelineRef}
+          timelineStart={timeRange.before}
+          segmentDuration={zoomSettings.segmentDuration}
+        />
+      )}
+      {inLiveHotZone && !isLive && (
         <div
           className="pointer-events-none absolute inset-x-0 top-1 z-30 flex justify-center"
           data-testid="live-hot-zone"
@@ -1628,5 +1805,79 @@ function Timeline({
         </div>
       )}
     </div>
+  );
+}
+
+type LiveEdgeMarkerProps = {
+  timelineRef: RefObject<HTMLDivElement | null>;
+  timelineStart: number;
+  segmentDuration: number;
+};
+
+// a line across the timeline at the current real time, where the live
+// stream sits. Recordings stop 15 to 25s below it while segments are
+// still being written
+function LiveEdgeMarker({
+  timelineRef,
+  timelineStart,
+  segmentDuration,
+}: LiveEdgeMarkerProps) {
+  const markerRef = useRef<HTMLDivElement>(null);
+  const { alignStartDateToTimeline, segmentHeight } = useTimelineUtils({
+    segmentDuration,
+  });
+
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    const marker = markerRef.current;
+
+    if (!timeline || !marker) {
+      return;
+    }
+
+    // same layout as MotionReviewTimeline: the track starts two segments
+    // above the aligned start, one segment of time per segmentHeight
+    const trackStart =
+      alignStartDateToTimeline(timelineStart) + 2 * segmentDuration;
+
+    const place = () => {
+      const parent = marker.offsetParent;
+
+      if (!parent) {
+        return;
+      }
+
+      const trackTop =
+        timeline.getBoundingClientRect().top -
+        parent.getBoundingClientRect().top;
+      const offset =
+        ((trackStart - Date.now() / 1000) / segmentDuration) * segmentHeight -
+        timeline.scrollTop;
+      // between live edge ticks "now" can run past the top of the track
+      marker.style.transform = `translateY(${trackTop + Math.max(0, offset)}px)`;
+    };
+
+    place();
+    const interval = setInterval(place, 1000);
+    timeline.addEventListener("scroll", place, { passive: true });
+
+    return () => {
+      clearInterval(interval);
+      timeline.removeEventListener("scroll", place);
+    };
+  }, [
+    timelineRef,
+    timelineStart,
+    segmentDuration,
+    segmentHeight,
+    alignStartDateToTimeline,
+  ]);
+
+  return (
+    <div
+      ref={markerRef}
+      className="pointer-events-none absolute inset-x-0 top-0 z-20 h-0.5 bg-destructive"
+      data-testid="live-edge-marker"
+    />
   );
 }
