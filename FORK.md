@@ -57,9 +57,10 @@ are in `FORK.local.md`, which is not committed.
 | 8 | Backend | output: keep writing preview frames when frame slots run out of descriptors | Scrub frames for all cameras stopped about 10s after startup |
 | 9 | Live edge | recording view: go live when the handle is released at the top | Piece 3: the drag-to-top trigger (first version navigated to the live page) |
 | 10 | Live edge | recording view: play live inside the view at the live edge | Piece 3: live stream in place of the recording player, auto-live, warm-up, live edge marker |
+| 12 | Camera view | recording view: zoom and pan the live stream | Pinch/scroll zoom and drag to pan on the live stream, like the recording player |
 | 11 | Camera view | live: open cameras in the Camera view | One screen per camera: dashboard tiles, Birdseye and `/#camera` links open the recording view already live, the classic live page moves behind a Controls button. Also: the handle reads "Live" while live (a pinned time lagged the picture), and only user actions leave live |
 
-Commits 1 to 7 and 9 to 11 are frontend only (`web/`). Commit 8 is backend only
+Commits 1 to 7 and 9 to 12 are frontend only (`web/`). Commit 8 is backend only
 (`frigate/`). Documentation commits (`docs: ...`) only touch this file and
 `AGENTS.md`.
 
@@ -185,6 +186,11 @@ the in-view live mode below.
 - `RecordingLivePlayer` covers the player area (`absolute inset-0 z-30`)
   with a pulsing "LIVE" badge and, until the stream plays, "Loading live
   stream…".
+- Pinch or scroll zooms the live stream and dragging pans it, through the
+  same `react-zoom-pan-pinch` `TransformWrapper` settings as the recording
+  player (`minScale` 1, wheel `smoothStep` 0.005), disabled while warming
+  up. The wrapper stays mounted while the stream is warm, so a zoom
+  survives leaving and returning to live within the linger time.
 - The recording player stays mounted underneath, paused, with
   `isScrubbing` true (`scrubbing || isLive || ...`). That keeps live edge
   rebuilds from starting it and keeps its preview frames ready, so leaving
@@ -400,7 +406,7 @@ Confirmed on a real 11-camera install on 2026-10-15.
 |---|---|
 | `specs/recording-scrub-preview.spec.ts` | Preview follows a held handle, also after the edge grows; a tick doesn't drop a held handle; newest frame fallback; preview catches up when the handle stops; the edge keeps growing after release. Desktop and mobile |
 | `specs/camera-view.spec.ts` | A dashboard tile and a `/#camera` link open the Camera view live (handle reads Live, stream plays); Back returns to the dashboard; Controls opens the classic page; the Live button goes live in place after leaving. Desktop and mobile |
-| `specs/recording-live-handoff.spec.ts` | Live mode: releasing at the top plays live in the view (loading notice, then playing, unmuted, URL unchanged, stream connected while still held); releasing lower stays; leaving the zone cancels; dragging down leaves live; a press without a drag stays live; a timeline tap leaves live. Desktop and mobile, plus a real touch drag through Chromium's DevTools protocol and the live edge marker position |
+| `specs/recording-live-handoff.spec.ts` | Live mode: releasing at the top plays live in the view (loading notice, then playing, unmuted, URL unchanged, stream connected while still held); releasing lower stays; leaving the zone cancels; dragging down leaves live; a press without a drag stays live; a timeline tap leaves live; the scroll wheel zooms the live stream. Desktop and mobile, plus a real touch drag through Chromium's DevTools protocol and the live edge marker position |
 | `specs/recording-live-edge-playback.spec.ts` | Real HLS playback through hls.js: playback that runs into the newest footage carries on live; a paused player stays paused; playback continues from the playhead across a tick. Desktop and mobile |
 | `helpers/live-stream-mocker.ts` | Fake go2rtc MSE socket that streams `fixtures/media/live-3s.mp4` (3s 320x180 H.264 baseline, fragmented, codecs `avc1.42C01E`), so a live player really plays. Media goes out on `release()`; the clip is short, so release it once the player should be showing. Use with `LIVE_STREAM_CONFIG`, which restreams front_door through go2rtc |
 | `fixtures/media/recording-2s.mpegts` | 48 KB, 2s, 320x180 H.264 MPEG-TS segment used by the playback spec. The mock serves a playlist and coverage that grow with the requested window, repeating this segment with `EXT-X-DISCONTINUITY` |
