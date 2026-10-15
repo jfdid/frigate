@@ -12,9 +12,14 @@ from frigate.app import FrigateApp
 from frigate.config import FrigateConfig
 from frigate.log import setup_logging
 from frigate.util.config import find_config_file
+from frigate.util.services import set_file_limit
 
 
 def main() -> None:
+    # raise the open file limit before anything forks a child process, so
+    # every child inherits the higher limit
+    set_file_limit()
+
     # Fork this manager so the forkserver does not start until the first
     # worker process, after the config has applied environment_vars.
     manager = mp.get_context("fork").Manager()
