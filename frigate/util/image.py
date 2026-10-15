@@ -1031,29 +1031,42 @@ class UntrackedSharedMemory(_mpshm.SharedMemory):
     ) -> None:
         self._track = track
 
-        # if tracking, normal init will suffice
-        if track:
-            return super().__init__(name=name, create=create, size=size)
+        # SharedMemory unlinks the segment when mapping it fails (for example
+        # with no descriptors left), even when only opening an existing one, so
+        # a reader that couldn't map a camera's frame slot deleted it for every
+        # other process. Only the creator may remove a segment here.
+        self._opening_existing = not create
 
-        # lock so that other threads don't attempt to use the
-        # register function during this time
-        with self.__lock:
-            # temporarily disable registration during initialization
-            orig_register = _mprt.register
-            _mprt.register = self.__tmp_register
-
-            # initialize; ensure original register function is
-            # re-instated
-            try:
+        try:
+            # if tracking, normal init will suffice
+            if track:
                 super().__init__(name=name, create=create, size=size)
-            finally:
-                _mprt.register = orig_register
+                return
+
+            # lock so that other threads don't attempt to use the
+            # register function during this time
+            with self.__lock:
+                # temporarily disable registration during initialization
+                orig_register = _mprt.register
+                _mprt.register = self.__tmp_register
+
+                # initialize; ensure original register function is
+                # re-instated
+                try:
+                    super().__init__(name=name, create=create, size=size)
+                finally:
+                    _mprt.register = orig_register
+        finally:
+            self._opening_existing = False
 
     @staticmethod
     def __tmp_register(*args, **kwargs) -> None:
         return
 
     def unlink(self) -> None:
+        if self._opening_existing:
+            return
+
         if _mpshm._USE_POSIX and self._name:
             _mpshm._posixshmem.shm_unlink(self._name)
             if self._track:
@@ -1063,6 +1076,7 @@ class UntrackedSharedMemory(_mpshm.SharedMemory):
 class SharedMemoryFrameManager(FrameManager):
     def __init__(self):
         self.shm_store: dict[str, UntrackedSharedMemory] = {}
+        self._map_failures_logged: set[str] = set()
 
     def create(self, name: str, size) -> AnyStr:
         try:
@@ -1087,6 +1101,10 @@ class SharedMemoryFrameManager(FrameManager):
             return shm.buf
         except FileNotFoundError:
             logger.info(f"the file {name} not found")
+            return None
+        except (OSError, ValueError) as e:
+            # e.g. out of file descriptors, or a segment created but not yet sized
+            logger.warning("Unable to map shared memory %s: %s", name, e)
             return None
 
     def frame_times(self, camera: str) -> np.ndarray | None:
@@ -1162,6 +1180,16 @@ class SharedMemoryFrameManager(FrameManager):
                 self.shm_store[name] = shm
             return np.ndarray(shape, dtype=np.uint8, buffer=shm.buf)
         except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as e:
+            # e.g. out of file descriptors, or a segment created but not yet
+            # sized; a reader keeps every slot mapped, so a camera ring costs two
+            # descriptors per slot (the segment and mmap's duplicate)
+            if name not in self._map_failures_logged:
+                self._map_failures_logged.add(name)
+                logger.warning("Unable to map frame %s: %s", name, e)
+            else:
+                logger.debug("Unable to map frame %s: %s", name, e)
             return None
 
     def close(self, name: str):

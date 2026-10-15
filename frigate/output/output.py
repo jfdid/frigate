@@ -121,6 +121,18 @@ class OutputProcess(FrigateProcess):
             birdseye.add_camera(camera)
 
     def run(self) -> None:
+        try:
+            self._run()
+        except Exception:
+            # the jsmpeg and birdseye threads are not daemons, so returning
+            # would leave the process alive with nothing feeding them, which the
+            # watchdog can't tell from a working one. Exit so it restarts us.
+            logger.exception(
+                "Output process stopped on an unexpected error, exiting so it restarts"
+            )
+            os._exit(1)
+
+    def _run(self) -> None:
         self.pre_run_setup(self.config.logger)
 
         # birdseye resizes are small, and OpenCV's per-core thread pool burns

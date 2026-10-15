@@ -108,9 +108,13 @@ def apply_log_levels(default: str, log_levels: dict[str, LogLevel]) -> None:
 # happens while an internal lock is held, the stdout/err flush can cause a deadlock.
 #
 # https://github.com/python/cpython/issues/91776
+#
+# Line buffered so a child's output reaches the log as it is written. A process whose
+# run() raised prints the traceback, then waits for its non-daemon threads before
+# flushing, so a block buffered traceback could sit unseen for the process's lifetime.
 def reopen_std_streams() -> None:
-    sys.stdout = os.fdopen(1, "w")
-    sys.stderr = os.fdopen(2, "w")
+    sys.stdout = os.fdopen(1, "w", buffering=1)
+    sys.stderr = os.fdopen(2, "w", buffering=1)
 
 
 os.register_at_fork(after_in_child=reopen_std_streams)
