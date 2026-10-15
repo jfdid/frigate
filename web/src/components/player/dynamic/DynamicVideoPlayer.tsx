@@ -312,6 +312,17 @@ export default function DynamicVideoPlayer({
     sourceLoadedRef.current = true;
     governorRef.current?.sourceLoadEnded();
 
+    if (!isScrubbing && !resumePlaybackRef.current) {
+      // a rebuild that stays paused never reaches onPlaying, which is what
+      // clears the loading timer, so the spinner would otherwise sit over
+      // the paused frame until the next interaction
+      if (loadingTimeoutRef.current) {
+        clearTimeout(loadingTimeoutRef.current);
+      }
+      setIsLoading(false);
+      setIsBuffering(false);
+    }
+
     const anchor = sourceAnchorRef.current;
 
     if (!controller || !anchor) {
@@ -760,9 +771,16 @@ export default function DynamicVideoPlayer({
     // to ~250ms
     const continuesPlayback = qualityChanged || extendsSource;
     const liveTime = playerRef.current?.currentTime;
-    const livePlayed =
+    const outgoingProgress =
       continuesPlayback && controller && liveTime !== undefined && liveTime > 0
         ? controller.getProgress(liveTime)
+        : undefined;
+    // a controller recreated while coverage reloaded has no model yet and
+    // maps every position to 0, so only trust a time inside the window
+    const livePlayed =
+      outgoingProgress !== undefined &&
+      outgoingProgress >= recordingParams.after
+        ? outgoingProgress
         : undefined;
     const lastPlayed = livePlayed ?? lastPlayedTimestampRef.current;
     const anchorTimestamp =
@@ -789,9 +807,11 @@ export default function DynamicVideoPlayer({
       );
     }
 
-    resumePlaybackRef.current = extendsSource
-      ? (controller?.isPlaying() ?? true)
-      : true;
+    // a player that ran out of footage at the old end reads as paused and
+    // ended, but it is waiting for exactly this extension, so it resumes
+    const player = playerRef.current;
+    resumePlaybackRef.current =
+      !extendsSource || !player || !player.paused || player.ended;
     builtSourceRef.current = {
       camera,
       after: recordingParams.after,

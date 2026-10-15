@@ -64,9 +64,13 @@ async function openAtRollover(frigateApp: {
   );
 
   await frigateApp.page.route(/\/api\/preview\/.+\/start\//, (route) => {
-    if (route.request().url().includes("/frames")) {
+    const url = route.request().url();
+
+    if (url.includes("/frames")) {
+      // the real endpoint only lists the requested camera's frames
+      const camera = url.match(/\/api\/preview\/([^/]+)\/start\//)?.[1];
       return route.fulfill({
-        json: hourRolled ? [] : [`preview_backyard-${REVIEW_START}.webp`],
+        json: hourRolled ? [] : [`preview_${camera}-${REVIEW_START}.webp`],
       });
     }
 
