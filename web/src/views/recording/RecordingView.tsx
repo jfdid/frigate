@@ -208,6 +208,10 @@ export function RecordingView({
   // hide or shift across it.
   const RECORDING_INGEST_LAG_S = 15;
 
+  // declared here rather than with the rest of the scrubbing state below
+  // because the live edge has to hold still while the handlebar is down
+  const [scrubbing, setScrubbing] = useState(false);
+
   const [liveEdgeBefore, setLiveEdgeBefore] = useState(() =>
     Math.max(timeRange.before, Date.now() / 1000 - RECORDING_INGEST_LAG_S),
   );
@@ -218,7 +222,11 @@ export function RecordingView({
     // chase, so don't bother scheduling the interval for it
     const viewingLiveEdge = Date.now() / 1000 - timeRange.before < 60;
 
-    if (!viewingLiveEdge) {
+    // growing the range rebuilds the timeline under the cursor, which
+    // drops a handlebar that is still being dragged. Pause while it is
+    // held; the interval restarts on release and catches up on its next
+    // tick, so the edge falls behind by at most one extra interval.
+    if (!viewingLiveEdge || scrubbing) {
       return;
     }
 
@@ -229,7 +237,7 @@ export function RecordingView({
     }, 15000);
 
     return () => clearInterval(interval);
-  }, [timeRange.before]);
+  }, [timeRange.before, scrubbing]);
 
   const effectiveTimeRange = useMemo<TimeRange>(
     () => ({ after: timeRange.after, before: liveEdgeBefore }),
@@ -369,7 +377,6 @@ export function RecordingView({
 
   // scrubbing and timeline state
 
-  const [scrubbing, setScrubbing] = useState(false);
   const [currentTime, setCurrentTime] = useState<number>(startTime);
   const [playerTime, setPlayerTime] = useState(startTime);
 
@@ -1301,33 +1308,46 @@ function Timeline({
   const alignedAfter = alignStartDateToTimeline(timeRange.after);
   const alignedBefore = alignEndDateToTimeline(timeRange.before);
 
-  const { data: motionData, isLoading } = useSWR<MotionData[]>([
-    "review/activity/motion",
-    {
-      before: alignedBefore,
-      after: alignedAfter,
-      scale: Math.round(zoomSettings.segmentDuration / 2),
-      cameras: mainCamera,
-    },
-  ]);
+  // the growing live edge changes these keys every tick; keeping the
+  // previous data while the next window loads stops the timeline from
+  // swapping to its skeleton, which unmounted it and dropped a handlebar
+  // that was being dragged
+  const { data: motionData, isLoading } = useSWR<MotionData[]>(
+    [
+      "review/activity/motion",
+      {
+        before: alignedBefore,
+        after: alignedAfter,
+        scale: Math.round(zoomSettings.segmentDuration / 2),
+        cameras: mainCamera,
+      },
+    ],
+    { keepPreviousData: true },
+  );
 
-  const { data: noRecordings } = useSWR<RecordingSegment[]>([
-    "recordings/unavailable",
-    {
-      before: alignedBefore,
-      after: alignedAfter,
-      scale: Math.round(zoomSettings.segmentDuration),
-      cameras: mainCamera,
-    },
-  ]);
+  const { data: noRecordings } = useSWR<RecordingSegment[]>(
+    [
+      "recordings/unavailable",
+      {
+        before: alignedBefore,
+        after: alignedAfter,
+        scale: Math.round(zoomSettings.segmentDuration),
+        cameras: mainCamera,
+      },
+    ],
+    { keepPreviousData: true },
+  );
 
-  const { data: coverage } = useSWR<RecordingCoverage>([
-    `${mainCamera}/recordings/coverage`,
-    {
-      before: alignedBefore,
-      after: alignedAfter,
-    },
-  ]);
+  const { data: coverage } = useSWR<RecordingCoverage>(
+    [
+      `${mainCamera}/recordings/coverage`,
+      {
+        before: alignedBefore,
+        after: alignedAfter,
+      },
+    ],
+    { keepPreviousData: true },
+  );
 
   const subOnlyRanges = useMemo(
     () =>
@@ -1414,7 +1434,7 @@ function Timeline({
         </>
       )}
       {timelineType == "timeline" ? (
-        !isLoading ? (
+        !(isLoading && motionData == undefined) ? (
           <MotionReviewTimeline
             timelineRef={selectedTimelineRef}
             segmentDuration={zoomSettings.segmentDuration}
