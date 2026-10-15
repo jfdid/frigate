@@ -18,7 +18,7 @@ const SEGMENT_S = 2;
 // midday, so the recording view's day never starts inside the test window
 const NOW = new Date(2026, 8, 2, 12, 30, 0);
 const SEGMENT = readFileSync(
-  fileURLToPath(new URL("../fixtures/media/recording-2s.ts", import.meta.url)),
+  fileURLToPath(new URL("../fixtures/media/recording-2s.mpegts", import.meta.url)),
 );
 
 /** Whole segments of footage between after and before. */
