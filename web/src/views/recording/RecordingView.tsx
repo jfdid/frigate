@@ -216,17 +216,22 @@ export function RecordingView({
     Math.max(timeRange.before, Date.now() / 1000 - RECORDING_INGEST_LAG_S),
   );
 
-  useEffect(() => {
-    // only tick forward while viewing the live edge; a historical
-    // recording (timeRange.before well in the past) has no "now" to
-    // chase, so don't bother scheduling the interval for it
-    const viewingLiveEdge = Date.now() / 1000 - timeRange.before < 60;
+  // only tick forward while viewing the live edge; a historical
+  // recording (timeRange.before well in the past) has no "now" to chase.
+  // Decided once at mount (timeRange.before is fixed for this view's
+  // lifetime): re-deciding whenever the interval restarts would compare a
+  // stale timeRange.before against a later "now" and stop following the
+  // live edge for good once the view had been open a minute
+  const [followsLiveEdge] = useState(
+    () => Date.now() / 1000 - timeRange.before < 60,
+  );
 
+  useEffect(() => {
     // growing the range rebuilds the timeline under the cursor, which
     // drops a handlebar that is still being dragged. Pause while it is
     // held; the interval restarts on release and catches up on its next
     // tick, so the edge falls behind by at most one extra interval.
-    if (!viewingLiveEdge || scrubbing) {
+    if (!followsLiveEdge || scrubbing) {
       return;
     }
 
@@ -237,7 +242,7 @@ export function RecordingView({
     }, 15000);
 
     return () => clearInterval(interval);
-  }, [timeRange.before, scrubbing]);
+  }, [followsLiveEdge, timeRange.before, scrubbing]);
 
   const effectiveTimeRange = useMemo<TimeRange>(
     () => ({ after: timeRange.after, before: liveEdgeBefore }),

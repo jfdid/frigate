@@ -120,16 +120,21 @@ async function dragHandlebarExpectingFrames(
   await page.mouse.down();
   let previous = await mainFrame();
   for (let i = 1; i <= 5; i++) {
+    // useDraggableElement commits the drag time at most every 100ms and
+    // holds the newest value until the next move or the release, so a
+    // step landing inside that window would leave the preview on the
+    // previous frame while the handle sits still. That trailing value is
+    // a separate upstream issue; step past the window to test the rest
+    await page.clock.runFor(150);
     await page.mouse.move(x, y + i * 30, { steps: 3 });
     // still held: the frame has to change before the release
     await expect.poll(mainFrame, { timeout: 3_000 }).not.toBe(previous);
     previous = await mainFrame();
 
     if (tickWhileHeld && i == 2) {
-      // a liveEdgeBefore tick mid-drag used to rebuild the timeline and
-      // drop the handle, so the remaining steps stopped moving it
-      // if a tick does refetch, let the slow response land before moving
-      // on, since that is when the timeline used to swap to its skeleton
+      // a liveEdgeBefore tick mid-drag used to swap the timeline to its
+      // skeleton while the slow refetch landed, dropping the handle; wait
+      // for that response (if the tick refetches) before moving on
       const refetched = page
         .waitForResponse(/\/api\/review\/activity\/motion/, {
           timeout: 3_000,
@@ -155,8 +160,12 @@ async function runScrubCase(
   await openRecordingView(frigateApp);
 
   if (afterLiveEdgeGrows) {
-    // past at least one liveEdgeBefore tick
-    await frigateApp.page.clock.fastForward("00:35");
+    // mounted first, or the view just opens later; then past at least
+    // one liveEdgeBefore tick (runFor fires each one, fastForward only once)
+    await expect(
+      frigateApp.page.locator('[role="scrollbar"] .rounded-full').first(),
+    ).toBeVisible({ timeout: 15_000 });
+    await frigateApp.page.clock.runFor("00:35");
   }
 
   await dragHandlebarExpectingFrames(frigateApp, { tickWhileHeld });
@@ -197,6 +206,54 @@ test.describe("Recording scrub preview: desktop @medium", () => {
       afterLiveEdgeGrows: false,
       tickWhileHeld: true,
     });
+  });
+});
+
+test.describe("Recording live edge: desktop @medium", () => {
+  test("the live edge keeps growing after the handlebar is released", async ({
+    frigateApp,
+  }) => {
+    if (frigateApp.isMobile) {
+      test.skip();
+      return;
+    }
+
+    const page = frigateApp.page;
+    let latestBefore = 0;
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (/\/api\/[^/]+\/recordings\/coverage$/.test(url.pathname)) {
+        latestBefore = Math.max(
+          latestBefore,
+          Number(url.searchParams.get("before") ?? 0),
+        );
+      }
+    });
+
+    await page.clock.install();
+    await frigateApp.installDefaults();
+    await openRecordingView(frigateApp);
+
+    // the view has to be mounted before the clock moves, or it simply
+    // opens a minute later and the window below starts from there
+    await expect(
+      page.locator('[role="scrollbar"] .rounded-full').first(),
+    ).toBeVisible({ timeout: 15_000 });
+
+    // past the first minute: releasing a drag restarts the live edge
+    // interval, and a restart after that used to stop it for good.
+    // runFor fires every tick in the window, unlike fastForward
+    await page.clock.runFor("01:05");
+    await dragHandlebarExpectingFrames(frigateApp);
+
+    // ticks after the release put the edge at "now" minus the 15s ingest
+    // lag, so three of them carry it well past the release time; a frozen
+    // edge stays behind it even after rounding up to a timeline segment
+    const releasedAt = await page.evaluate(() => Date.now() / 1000);
+    await page.clock.runFor("00:50");
+    await expect
+      .poll(() => latestBefore)
+      .toBeGreaterThanOrEqual(releasedAt + 20);
   });
 });
 

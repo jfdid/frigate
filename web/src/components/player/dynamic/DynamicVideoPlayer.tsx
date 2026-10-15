@@ -213,6 +213,18 @@ export default function DynamicVideoPlayer({
   useEffect(() => {
     sourceAnchorRef.current = startTimestamp;
   }, [startTimestamp]);
+
+  // the window the current source was built for. A rebuild that keeps its
+  // start and only moves its end is the view's live edge growing, which
+  // has to continue from the playhead instead of snapping back to the
+  // last explicit seek (startTimestamp)
+  const builtSourceRef = useRef<
+    { camera: string; after: number; before: number } | undefined
+  >(undefined);
+
+  // whether the next source load starts playing; a live edge extension
+  // of a paused player keeps it paused
+  const resumePlaybackRef = useRef(true);
   // a recordings change refined the seek model without changing the
   // playlist, so the playback effect skips its loading indicator
   const modelOnlyUpdateRef = useRef(false);
@@ -315,7 +327,10 @@ export default function DynamicVideoPlayer({
     // while the handlebar is down only position the hidden player, never
     // start it: a mid-drag chunk prefetch can audibly blip before
     // onPlaying pauses it. The release seek starts playback
-    controller.seekToTimestamp(anchor, !isScrubbing);
+    controller.seekToTimestamp(
+      anchor,
+      !isScrubbing && resumePlaybackRef.current,
+    );
   }, [controller, sourceTimeRange, isScrubbing]);
 
   // the range the controller's playback model was last built for; while
@@ -728,19 +743,30 @@ export default function DynamicVideoPlayer({
       return;
     }
 
-    // a quality switch rebuilds mid-playback, so anchor to the live
-    // playhead rather than the chunk-stale startTimestamp prop. The
-    // controller still holds the OUTGOING timeline here (newPlayback
-    // runs in a later effect), and the timeupdate-throttled lastPlayed
-    // ref lags the frame on screen by up to ~250ms
+    const built = builtSourceRef.current;
+    const extendsSource =
+      !qualityChanged &&
+      source !== undefined &&
+      built !== undefined &&
+      built.camera === camera &&
+      built.after === recordingParams.after &&
+      recordingParams.before > built.before;
+
+    // a quality switch or a live edge extension rebuilds mid-playback, so
+    // anchor to the live playhead rather than the chunk-stale
+    // startTimestamp prop. The controller still holds the OUTGOING
+    // timeline here (newPlayback runs in a later effect), and the
+    // timeupdate-throttled lastPlayed ref lags the frame on screen by up
+    // to ~250ms
+    const continuesPlayback = qualityChanged || extendsSource;
     const liveTime = playerRef.current?.currentTime;
     const livePlayed =
-      qualityChanged && controller && liveTime !== undefined && liveTime > 0
+      continuesPlayback && controller && liveTime !== undefined && liveTime > 0
         ? controller.getProgress(liveTime)
         : undefined;
     const lastPlayed = livePlayed ?? lastPlayedTimestampRef.current;
     const anchorTimestamp =
-      qualityChanged &&
+      continuesPlayback &&
       lastPlayed !== undefined &&
       lastPlayed >= recordingParams.after &&
       lastPlayed <= recordingParams.before
@@ -763,6 +789,15 @@ export default function DynamicVideoPlayer({
       );
     }
 
+    resumePlaybackRef.current = extendsSource
+      ? (controller?.isPlaying() ?? true)
+      : true;
+    builtSourceRef.current = {
+      camera,
+      after: recordingParams.after,
+      before: recordingParams.before,
+    };
+
     setSource({
       playlist,
       startPosition,
@@ -779,7 +814,7 @@ export default function DynamicVideoPlayer({
     }
 
     if (playerRef.current) {
-      playerRef.current.autoplay = !isScrubbing;
+      playerRef.current.autoplay = !isScrubbing && resumePlaybackRef.current;
     }
 
     const modelOnlyUpdate = modelOnlyUpdateRef.current;
