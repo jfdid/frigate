@@ -454,11 +454,20 @@ function PreviewFramesPlayer({
   const cameraName = useCameraFriendlyName(camera);
   // frames data
 
-  const { data: previewFrames } = useSWR<string[]>(
+  // a window that grows at the live edge changes this key every tick; keep
+  // the previous listing while the next loads, or the controller (and the
+  // player controller built on it) is torn down and rebuilt each time
+  const { data: fetchedFrames } = useSWR<string[]>(
     `preview/${camera}/start/${Math.floor(timeRange.after)}/end/${Math.ceil(
       timeRange.before,
     )}/frames`,
-    { revalidateOnFocus: false },
+    { revalidateOnFocus: false, keepPreviousData: true },
+  );
+  // the kept listing can belong to the previous camera after a switch
+  const previewFrames = useMemo(
+    () =>
+      fetchedFrames?.filter((frame) => frame.startsWith(`preview_${camera}-`)),
+    [fetchedFrames, camera],
   );
   const frameTimes = useMemo(() => {
     if (!previewFrames) {
@@ -485,8 +494,16 @@ function PreviewFramesPlayer({
       frameTimes,
       setCurrentHourFrame,
     );
+    // rebuilt only when frames first arrive or the camera changes; a
+    // refreshed listing is handed to the existing controller below
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imgRef, frameTimes, imgRef.current]);
+  }, [imgRef, camera, frameTimes === undefined, imgRef.current]);
+
+  useEffect(() => {
+    if (controller && frameTimes) {
+      controller.frameTimes = frameTimes;
+    }
+  }, [controller, frameTimes]);
 
   // initial state
 
