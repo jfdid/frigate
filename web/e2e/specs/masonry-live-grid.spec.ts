@@ -200,7 +200,8 @@ test.describe("Masonry live grid @critical", () => {
       .not.toBeNull();
 
     await live.cameraCard("front_door").first().click();
-    await expect(frigateApp.page).toHaveURL(/#front_door/);
+    // fork: opening a camera goes to the Camera view
+    await expect(frigateApp.page).toHaveURL(/\/review/);
 
     await frigateApp.page.goBack();
     await expect(live.cameraCard("front_door").first()).toBeVisible({

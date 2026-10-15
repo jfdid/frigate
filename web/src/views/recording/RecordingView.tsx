@@ -56,6 +56,7 @@ import MobileReviewSettingsDrawer from "@/components/overlay/MobileReviewSetting
 import Logo from "@/components/Logo";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FaVideo } from "react-icons/fa";
+import { LuSlidersHorizontal } from "react-icons/lu";
 import { VideoResolutionType } from "@/types/live";
 import {
   ASPECT_VERTICAL_LAYOUT,
@@ -397,8 +398,9 @@ export function RecordingView({
   // recording player for the camera's live stream without leaving this
   // view. Entered by releasing the handlebar at the top of the timeline or
   // by playback running into the newest footage; left by dragging the
-  // handle down or by anything else that moves it (a timeline tap, the
-  // clip buttons, a seek). While live the recording player stays mounted,
+  // handle down, by a tap on the timeline, or by a seek (the clip buttons,
+  // keys, a list entry). The timeline repositioning its own handle while
+  // live is ignored, so the handle stays pinned. While live the recording player stays mounted,
   // paused and covered, in its scrubbing state, so leaving shows preview
   // frames at once and a live edge rebuild never starts it.
 
@@ -406,13 +408,13 @@ export function RecordingView({
     followsLiveEdge &&
     exportRange == undefined &&
     debugReplayRange == undefined;
-  const [isLive, setIsLive] = useState(false);
-  const isLiveRef = useRef(false);
-  // the handle time live mode set; any other value means something moved it
-  const livePinnedTimeRef = useRef<number | undefined>(undefined);
+  // opened from a camera tile, Birdseye or a /#camera link: start live
+  const [isLive, setIsLive] = useState(
+    () => liveAllowed && recording?.live == true,
+  );
+  const isLiveRef = useRef(isLive);
 
   const pinLiveTime = useCallback(() => {
-    livePinnedTimeRef.current = liveEdgeBefore;
     setCurrentTime(liveEdgeBefore);
   }, [liveEdgeBefore]);
 
@@ -429,7 +431,6 @@ export function RecordingView({
 
   const leaveLive = useCallback(() => {
     isLiveRef.current = false;
-    livePinnedTimeRef.current = undefined;
     setIsLive(false);
   }, []);
 
@@ -439,17 +440,6 @@ export function RecordingView({
       pinLiveTime();
     }
   }, [isLive, scrubbing, pinLiveTime]);
-
-  useEffect(() => {
-    if (
-      isLive &&
-      !scrubbing &&
-      livePinnedTimeRef.current !== undefined &&
-      currentTime !== livePinnedTimeRef.current
-    ) {
-      leaveLive();
-    }
-  }, [currentTime, isLive, scrubbing, leaveLive]);
 
   useEffect(() => {
     if (!liveAllowed && isLive) {
@@ -564,6 +554,9 @@ export function RecordingView({
       if (!currentTimeRange) {
         return;
       }
+
+      // a seek (clip buttons, keys, a list entry) leaves live mode
+      leaveLive();
       setCurrentTime(time);
 
       if (currentTimeRange.after <= time && currentTimeRange.before >= time) {
@@ -575,7 +568,7 @@ export function RecordingView({
         updateSelectedSegment(time);
       }
     },
-    [currentTimeRange, updateSelectedSegment],
+    [currentTimeRange, updateSelectedSegment, leaveLive],
   );
 
   const onClipPrevious = useCallback(
@@ -941,7 +934,13 @@ export function RecordingView({
               aria-label="Go to the main camera live view"
               size="sm"
               onClick={() => {
-                navigate(`/#${mainCamera}`);
+                // live in place at the live edge; a historical view opens
+                // a fresh Camera view at the live edge instead
+                if (liveAllowed) {
+                  goLive();
+                } else {
+                  navigate(`/#${mainCamera}`);
+                }
               }}
             >
               <FaVideo className="size-5 text-secondary-foreground" />
@@ -949,6 +948,19 @@ export function RecordingView({
                 <div className="text-primary">
                   {t("menu.live.title", { ns: "common" })}
                 </div>
+              )}
+            </Button>
+            <Button
+              className="flex items-center gap-2.5 rounded-lg"
+              aria-label={t("cameraView.controlsAria")}
+              size="sm"
+              onClick={() => {
+                navigate(`/?controls#${mainCamera}`);
+              }}
+            >
+              <LuSlidersHorizontal className="size-5 text-secondary-foreground" />
+              {isDesktop && (
+                <div className="text-primary">{t("cameraView.controls")}</div>
               )}
             </Button>
           </div>
@@ -1431,6 +1443,8 @@ function Timeline({
   // dragging it down leaves for recordings
 
   const [handlebarHeld, setHandlebarHeld] = useState(false);
+  const handlebarHeldRef = useRef(false);
+  const lastPointerDownRef = useRef(0);
   const [inLiveHotZone, setInLiveHotZone] = useState(false);
   const inLiveHotZoneRef = useRef(false);
   const leftLiveRef = useRef(false);
@@ -1462,6 +1476,7 @@ function Timeline({
     (dragging: boolean) => {
       setScrubbing(dragging);
       setHandlebarHeld(dragging);
+      handlebarHeldRef.current = dragging;
 
       if (dragging) {
         leftLiveRef.current = false;
@@ -1478,6 +1493,25 @@ function Timeline({
       }
     },
     [setScrubbing, updateLiveHotZone],
+  );
+
+  // the timeline sets the handle time for a drag, a tap on a segment, and
+  // on its own when it settles (snapping to the nearest segment on load).
+  // While live only a drag (which leaves via onLeaveLive) or a tap moves
+  // the handle; a tap is a set that follows a press on the timeline
+  const setHandlebarTime = useCallback(
+    (value: React.SetStateAction<number>) => {
+      if (!isLiveRef.current || handlebarHeldRef.current) {
+        setCurrentTime(value);
+        return;
+      }
+
+      if (performance.now() - lastPointerDownRef.current < 1000) {
+        onLeaveLiveRef.current?.();
+        setCurrentTime(value);
+      }
+    },
+    [setCurrentTime],
   );
 
   useEffect(() => {
@@ -1674,6 +1708,17 @@ function Timeline({
 
   return (
     <div
+      onPointerDownCapture={(e) => {
+        // a press on the handle is a drag, and the drag hook can set a time
+        // in the same render, before the drag is reported; anything else
+        // pressed on the timeline is a tap
+        if ((e.target as Element).closest('[role="scrollbar"]')) {
+          handlebarHeldRef.current = true;
+          lastPointerDownRef.current = 0;
+        } else {
+          lastPointerDownRef.current = performance.now();
+        }
+      }}
       className={cn(
         "relative overflow-hidden",
         isDesktop
@@ -1743,13 +1788,15 @@ function Timeline({
             setExportStartTime={setExportStartTime}
             setExportEndTime={setExportEndTime}
             handlebarTime={currentTime}
-            setHandlebarTime={setCurrentTime}
+            setHandlebarTime={setHandlebarTime}
             events={mainCameraReviewItems}
             motion_events={motionData ?? []}
             noRecordingRanges={noRecordings ?? []}
             subOnlyRanges={subOnlyRanges}
             contentRef={contentRef}
             onHandlebarDraggingChange={onHandlebarDraggingChange}
+            // a pinned time would lag the live picture by up to 15s
+            handlebarLabel={isLive ? t("liveEdge.handlebar") : undefined}
             isZooming={isZooming}
             zoomDirection={zoomDirection}
             onZoomChange={handleZoomChange}

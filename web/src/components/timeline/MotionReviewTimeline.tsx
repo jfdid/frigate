@@ -46,6 +46,7 @@ export type MotionReviewTimelineProps = {
   contentRef: RefObject<HTMLDivElement | null>;
   timelineRef?: RefObject<HTMLDivElement | null>;
   onHandlebarDraggingChange?: (isDragging: boolean) => void;
+  handlebarLabel?: string;
   dense?: boolean;
   isZooming: boolean;
   zoomDirection: TimelineZoomDirection;
@@ -81,6 +82,7 @@ export function MotionReviewTimeline({
   contentRef,
   timelineRef,
   onHandlebarDraggingChange,
+  handlebarLabel,
   dense = false,
   isZooming,
   zoomDirection,
@@ -222,6 +224,7 @@ export function MotionReviewTimeline({
       timelineStartAligned={timelineStartAligned}
       showHandlebar={showHandlebar}
       onHandlebarDraggingChange={onHandlebarDraggingChange}
+      handlebarLabel={handlebarLabel}
       onlyInitialHandlebarScroll={onlyInitialHandlebarScroll}
       showExportHandles={showExportHandles}
       handlebarTime={handlebarTime}

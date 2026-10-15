@@ -75,7 +75,7 @@ test.describe("WebRTC availability gating @critical", () => {
       }),
     );
 
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     const live = new LivePage(frigateApp.page, true);
     await expect(live.backButton).toBeVisible({ timeout: 10_000 });
@@ -141,7 +141,7 @@ test.describe("WebRTC availability gating @critical", () => {
       }),
     );
 
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     await expect
       .poll(() => warnings.length, { timeout: 10_000 })
@@ -185,7 +185,7 @@ test.describe("WebRTC availability gating @critical", () => {
       }),
     );
 
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     const live = new LivePage(frigateApp.page, true);
     await expect(live.backButton).toBeVisible({ timeout: 10_000 });
@@ -237,7 +237,7 @@ test.describe("WebRTC availability gating @critical", () => {
       }),
     );
 
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     const live = new LivePage(frigateApp.page, true);
     await expect(live.backButton).toBeVisible({ timeout: 10_000 });
@@ -288,7 +288,7 @@ test.describe("WebRTC availability gating @critical", () => {
       }),
     );
 
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     const live = new LivePage(frigateApp.page, true);
     await expect(live.backButton).toBeVisible({ timeout: 10_000 });
@@ -412,7 +412,7 @@ test.describe("WebRTC availability gating @critical @mobile", () => {
       }),
     );
 
-    await frigateApp.goto("/#front_door");
+    await frigateApp.goto("/?controls#front_door");
 
     // Open the mobile camera-settings drawer. The camera controls render a
     // second dialog-popup trigger (the FaCog settings toggle) after the global
