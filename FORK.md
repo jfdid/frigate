@@ -574,6 +574,7 @@ them with `git tag -l 'v*-mods.*' -n20`, and roll back to one with
 |---|---|---|
 | `v0.19.0-dev-mods.1` | `dev` at `b79e04397` | Live edge pieces 1 to 3 (in-view live mode), scrub fixes, preview frame backend fix, FORK.md. Verified on a real install 2026-10-15 |
 | `v0.19.0-dev-mods.2` | `dev` at `b79e04397` | Adds the Camera view (camera opens go straight to live in the recording view, Controls button for the classic page), "Live" on the handle, zoom and pan on the live stream. Verified on a real install 2026-10-15 |
+| `v0.19.0-dev-mods.3` | `dev` at `62ca5b25e` | Same fork changes as mods.2, rebased onto `dev` after it merged v0.18.2, so it includes every fix in v0.18.1 and v0.18.2 (security fixes, MSE buffer trim fix). Verified on a real install 2026-10-15 |
 
 Tag a new checkpoint after a change has been verified on a real install:
 `git tag -a v<version>-mods.<n> -m "<summary>" && git push origin v<version>-mods.<n>`,
