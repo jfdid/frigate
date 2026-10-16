@@ -19,8 +19,8 @@ Last updated: 2026-10-15, on branch `mods`.
 | Fork | `github.com/jfdid/frigate` (remote `origin`) |
 | Upstream | `github.com/blakeblackshear/frigate` (remote `upstream`), branch `dev` |
 | Branch with all fork changes | `mods` (this branch, the fork's default on GitHub). Build and deploy from it. Named `overnight/scrub-fix` until 2026-10-15 |
-| Fork `dev` and `main` | Plain snapshots of upstream `dev` (`b79e04397`). No fork changes |
-| Upstream base of this branch | `b79e04397` "Reduce idle CPU from thread pools (#24652)", upstream `dev`, version 0.19.0-dev |
+| Fork `dev` and `main` | Plain snapshots of upstream `dev` (`b79e04397`, older than this branch's base). No fork changes |
+| Upstream base of this branch | `62ca5b25e`, upstream `dev` after it merged v0.18.2 (2026-10-15), version 0.19.0-dev. Includes every fix in v0.18.1 and v0.18.2 |
 
 Commit IDs change on every rebase, so this file refers to commits by subject.
 List them with `git log --oneline upstream/dev..mods`.
@@ -377,12 +377,13 @@ after startup, with nothing in the logs. Recordings were unaffected.
 
 ### Interaction with newer upstream
 
-Upstream #24635 (in v0.18.1, merged into `dev` after this branch's base)
+Upstream #24635 (in v0.18.1, merged into `dev` on 2026-10-15)
 changed `main()` to `mp.get_context("fork").Manager()`, which delays the
 forkserver until the first worker process, after `set_file_limit()` has run.
 That independently fixes cause 2. When rebasing, `frigate/__main__.py` will
 conflict: keep upstream's fork context `Manager()`; keeping the early
-`set_file_limit()` call too is harmless. Causes 3 and 4 and the unlink
+`set_file_limit()` call too is harmless. The branch has carried this
+resolution since it was rebased onto `62ca5b25e`. Causes 3 and 4 and the unlink
 problem are not fixed upstream as of 2026-10-15.
 
 ### Verify on the server
@@ -514,6 +515,17 @@ that the type check, the backend tests (30) and the fork's e2e specs plus
 `live.spec.ts` (56) all passed. So a rebase onto 0.19 is expected to be
 mostly mechanical unless upstream reworks `RecordingView.tsx`,
 `DynamicVideoPlayer.tsx` or the timeline components.
+
+**Rebase on 2026-10-15:** after v0.18.2 (two security fixes) was merged
+into `dev`, `mods` was rebased onto `62ca5b25e` (41 commits newer than
+`b79e04397`, including all of v0.18.1 and v0.18.2) with the same single
+conflict. The type check, lint, the fork's backend tests and the full e2e
+suite (686 passed, one go2rtc settings flake that passed 50 of 50 on rerun)
+passed.
+
+Releases on the 0.18 branch reach `dev` through a merge some days later.
+To check that a new release is in the base:
+`git fetch upstream --tags && git merge-base --is-ancestor v0.18.<n> mods && echo included`.
 
 Before each change is dropped, check whether upstream fixed it:
 `git log upstream/dev --oneline -- <file>` and read the diffs.
