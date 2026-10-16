@@ -59,9 +59,10 @@ are in `FORK.local.md`, which is not committed.
 | 10 | Live edge | recording view: play live inside the view at the live edge | Piece 3: live stream in place of the recording player, auto-live, warm-up, live edge marker |
 | 12 | Camera view | recording view: zoom and pan the live stream | Pinch/scroll zoom and drag to pan on the live stream, like the recording player |
 | 11 | Camera view | live: open cameras in the Camera view | One screen per camera: dashboard tiles, Birdseye and `/#camera` links open the recording view already live, the classic live page moves behind a Controls button. Also: the handle reads "Live" while live (a pinned time lagged the picture), and only user actions leave live |
+| 13 | Backend | nginx: don't warn about the go2rtc stream flag on every request | Upstream bug (from the v0.18.2 security fix): every authenticated request logged `using uninitialized "go2rtc_stream_proxy" variable` |
 
 Commits 1 to 7 and 9 to 12 are frontend only (`web/`). Commit 8 is backend only
-(`frigate/`). Documentation commits (`docs: ...`) only touch this file and
+(`frigate/`), and commit 13 only touches the nginx config (`docker/`). Documentation commits (`docs: ...`) only touch this file and
 `AGENTS.md`.
 
 ## 3. Live edge and Camera view (commits 1 to 5, 9 to 11)
