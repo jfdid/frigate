@@ -1262,12 +1262,19 @@ export function RecordingView({
                   supportsFullscreen={supportsFullScreen}
                   setFullResolution={setFullResolution}
                   toggleFullscreen={toggleFullscreen}
+                  onGoLive={liveAllowed ? goLive : undefined}
                   containerRef={mainLayoutRef}
                   quality={playerQuality}
                   onAutoQualityChange={onAutoQualityChange}
                 />
                 {liveAllowed && (liveWarm || isLive) && (
-                  <RecordingLivePlayer camera={mainCamera} active={isLive} />
+                  <RecordingLivePlayer
+                    camera={mainCamera}
+                    active={isLive}
+                    fullscreen={fullscreen}
+                    supportsFullscreen={supportsFullScreen}
+                    toggleFullscreen={toggleFullscreen}
+                  />
                 )}
               </div>
               {isDesktop && effectiveCameras.length > 1 && (

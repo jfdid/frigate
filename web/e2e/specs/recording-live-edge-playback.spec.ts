@@ -295,6 +295,36 @@ test.describe("Recording live edge playback: desktop @medium", () => {
   });
 });
 
+for (const mobile of [false, true]) {
+  const tags = mobile ? "@medium @mobile" : "@medium";
+
+  test.describe(`Recording Go live button: ${mobile ? "mobile" : "desktop"} ${tags}`, () => {
+    test.beforeEach(({ frigateApp }) => {
+      test.skip(frigateApp.isMobile != mobile);
+    });
+
+    test("the player controls' Go live button plays live", async ({
+      frigateApp,
+    }) => {
+      const page = frigateApp.page;
+      await openAtLiveEdge(frigateApp, 120);
+      await waitForPlayback(frigateApp);
+      await expect(activeLivePlayer(frigateApp)).toHaveCount(0);
+
+      // the player's controls show on hover on desktop and are up from
+      // the start on touch devices
+      if (!mobile) {
+        await page.locator("video").first().hover();
+      }
+
+      await page.getByTestId("go-live-button").click();
+
+      await expect(activeLivePlayer(frigateApp)).toBeVisible();
+      await expect(page.getByTestId("handlebar-label")).toHaveText("Live");
+    });
+  });
+}
+
 test.describe("Recording live edge playback: mobile @medium @mobile", () => {
   test("playback that runs into the newest footage carries on live", async ({
     frigateApp,

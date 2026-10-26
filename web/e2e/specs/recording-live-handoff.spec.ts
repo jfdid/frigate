@@ -261,6 +261,33 @@ for (const mobile of [false, true]) {
 
       await expect(activeLivePlayer(page)).toHaveCount(0);
     });
+
+    test("the live stream shows controls with a fullscreen button", async ({
+      frigateApp,
+    }) => {
+      const page = frigateApp.page;
+      const stream = await openAtLiveEdge(frigateApp);
+      stream.release();
+      await goLiveByDrag(page);
+
+      const controls = page.getByTestId("live-controls");
+      await expect(controls).toBeHidden();
+
+      // hover on desktop, a tap on touch devices
+      if (mobile) {
+        await activeLivePlayer(page).tap();
+      } else {
+        await activeLivePlayer(page).hover();
+      }
+
+      await expect(controls).toBeVisible();
+      await page.getByTestId("live-fullscreen").click();
+      await expect
+        .poll(() => page.evaluate(() => document.fullscreenElement != null))
+        .toBe(true);
+      // still live, now fullscreen
+      await expect(activeLivePlayer(page)).toBeVisible();
+    });
   });
 }
 

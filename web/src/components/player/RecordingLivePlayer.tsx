@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { useTranslation } from "react-i18next";
 import { TransformComponent, TransformWrapper } from "react-zoom-pan-pinch";
+import { isDesktop } from "react-device-detect";
+import { FaCompress, FaExpand } from "react-icons/fa";
 import LivePlayer from "./LivePlayer";
 import ActivityIndicator from "../indicators/activity-indicator";
 import { FrigateConfig } from "@/types/frigateConfig";
@@ -15,7 +17,14 @@ type RecordingLivePlayerProps = {
   // shown as the main player; otherwise mounted out of sight to warm up
   active: boolean;
   onReadyChange?: (ready: boolean) => void;
+  fullscreen?: boolean;
+  supportsFullscreen?: boolean;
+  toggleFullscreen?: () => void;
 };
+
+// how long a tap shows the controls on touch devices, like the recording
+// player's controls
+const CONTROLS_HIDE_MS = 4000;
 
 /**
  * The live stream shown inside the recording view at the live edge.
@@ -30,8 +39,11 @@ export default function RecordingLivePlayer({
   camera,
   active,
   onReadyChange,
+  fullscreen = false,
+  supportsFullscreen = false,
+  toggleFullscreen,
 }: RecordingLivePlayerProps) {
-  const { t } = useTranslation(["views/events"]);
+  const { t } = useTranslation(["views/events", "common"]);
   const { data: config } = useSWR<FrigateConfig>("config");
   const cameraConfig = config?.cameras[camera];
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -102,6 +114,35 @@ export default function RecordingLivePlayer({
     }
   }, []);
 
+  // controls: shown on hover (desktop) or on tap (touch), only while live
+
+  const [controls, setControls] = useState(false);
+  const hideControlsTimeoutRef = useRef<NodeJS.Timeout>(undefined);
+  // a drag that pans a zoomed stream ends in a click, which must not toggle
+  const pannedRef = useRef(false);
+
+  const showControls = useCallback((show: boolean, autoHide: boolean) => {
+    clearTimeout(hideControlsTimeoutRef.current);
+    setControls(show);
+
+    if (show && autoHide) {
+      hideControlsTimeoutRef.current = setTimeout(
+        () => setControls(false),
+        CONTROLS_HIDE_MS,
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!active) {
+      showControls(false, false);
+    }
+  }, [active, showControls]);
+
+  useEffect(() => () => clearTimeout(hideControlsTimeoutRef.current), []);
+
+  const hasControls = supportsFullscreen && toggleFullscreen != undefined;
+
   if (!cameraConfig || !streamName) {
     return null;
   }
@@ -119,6 +160,26 @@ export default function RecordingLivePlayer({
       data-testid="recording-live-player"
       data-active={active}
       data-ready={ready}
+      onMouseMove={
+        isDesktop && active && hasControls
+          ? () => !controls && showControls(true, false)
+          : undefined
+      }
+      onMouseLeave={
+        isDesktop && hasControls ? () => showControls(false, false) : undefined
+      }
+      onClick={
+        !isDesktop && active && hasControls
+          ? () => {
+              if (pannedRef.current) {
+                pannedRef.current = false;
+                return;
+              }
+
+              showControls(!controls, true);
+            }
+          : undefined
+      }
     >
       {/* pinch or scroll to zoom and drag to pan, like the recording
           player and the classic live page; kept while warming up, so a
@@ -127,6 +188,12 @@ export default function RecordingLivePlayer({
         minScale={1.0}
         wheel={{ smoothStep: 0.005 }}
         disabled={!active}
+        onPanningStart={() => {
+          pannedRef.current = false;
+        }}
+        onPanning={() => {
+          pannedRef.current = true;
+        }}
       >
         <TransformComponent
           wrapperStyle={{ width: "100%", height: "100%" }}
@@ -157,6 +224,33 @@ export default function RecordingLivePlayer({
         <div className="pointer-events-none absolute left-2 top-2 flex items-center gap-1.5 rounded-md bg-destructive px-2 py-0.5 text-xs font-medium text-white">
           <span className="size-1.5 animate-pulse rounded-full bg-white" />
           {t("liveEdge.live")}
+        </div>
+      )}
+      {active && hasControls && controls && (
+        <div
+          className="absolute bottom-5 left-1/2 z-50 flex -translate-x-1/2 select-none items-center gap-4 rounded-lg bg-background/60 px-4 py-2 text-primary"
+          data-testid="live-controls"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            className="cursor-pointer"
+            role="button"
+            aria-label={
+              fullscreen
+                ? t("button.exitFullscreen", { ns: "common" })
+                : t("button.fullscreen", { ns: "common" })
+            }
+            data-testid="live-fullscreen"
+            onClick={() => {
+              toggleFullscreen?.();
+
+              if (!isDesktop) {
+                showControls(true, true);
+              }
+            }}
+          >
+            {fullscreen ? <FaCompress /> : <FaExpand />}
+          </div>
         </div>
       )}
     </div>

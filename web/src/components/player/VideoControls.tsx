@@ -80,6 +80,7 @@ type VideoControlsProps = {
   snapshotLoading?: boolean;
   toggleFullscreen?: () => void;
   containerRef?: React.MutableRefObject<HTMLDivElement | null>;
+  onGoLive?: () => void;
 };
 export default function VideoControls({
   className,
@@ -104,7 +105,10 @@ export default function VideoControls({
   snapshotLoading = false,
   toggleFullscreen,
   containerRef,
+  onGoLive,
 }: VideoControlsProps) {
+  const { t } = useTranslation(["views/events"]);
+
   // layout
 
   const controlsContainerRef = useRef<HTMLDivElement | null>(null);
@@ -318,6 +322,19 @@ export default function VideoControls({
             onSnapshot();
           }}
         />
+      )}
+      {onGoLive && (
+        <div
+          className="flex cursor-pointer items-center gap-1.5 rounded-md bg-destructive px-2 py-0.5 text-xs font-medium text-white"
+          data-testid="go-live-button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onGoLive();
+          }}
+        >
+          <span className="size-1.5 rounded-full bg-white" />
+          {t("liveEdge.goLive")}
+        </div>
       )}
       {features.fullscreen && toggleFullscreen && (
         <div className="cursor-pointer" onClick={toggleFullscreen}>

@@ -10,7 +10,7 @@ maintainer's own setup and rules, kept out of the repo.**
 This is an unofficial fork. It is not supported by the Frigate team; don't
 report problems with it upstream.
 
-Last updated: 2026-10-15, on branch `mods`.
+Last updated: 2026-10-25, on branch `feature/live-overlay` (from `mods`).
 
 ## 1. Orientation
 
@@ -60,8 +60,9 @@ are in `FORK.local.md`, which is not committed.
 | 12 | Camera view | recording view: zoom and pan the live stream | Pinch/scroll zoom and drag to pan on the live stream, like the recording player |
 | 11 | Camera view | live: open cameras in the Camera view | One screen per camera: dashboard tiles, Birdseye and `/#camera` links open the recording view already live, the classic live page moves behind a Controls button. Also: the handle reads "Live" while live (a pinned time lagged the picture), and only user actions leave live |
 | 13 | Backend | nginx: don't warn about the go2rtc stream flag on every request | Upstream bug (from the v0.18.2 security fix): every authenticated request logged `using uninitialized "go2rtc_stream_proxy" variable` |
+| 14 | Camera view | recording view: fullscreen controls while live and a Go live button | Live had no controls, so no way to go fullscreen; going live needed a drag to the top of a possibly long timeline |
 
-Commits 1 to 7 and 9 to 12 are frontend only (`web/`). Commit 8 is backend only
+Commits 1 to 7, 9 to 12 and 14 are frontend only (`web/`). Commit 8 is backend only
 (`frigate/`), and commit 13 only touches the nginx config (`docker/`). Documentation commits (`docs: ...`) only touch this file and
 `AGENTS.md`.
 
@@ -178,6 +179,12 @@ the in-view live mode below.
   ends (`onClipEnded`) in the last chunk within `AUTO_LIVE_REACH_S = 60` of
   the live edge, `onRecordingClipEnded` goes live instead of the usual
   next-chunk step.
+- Or press **Go live** in the recording player's controls (commit 14):
+  `VideoControls` takes an optional `onGoLive` (passed through
+  `DynamicVideoPlayer` and `HlsVideoPlayer`) and shows a red "Go live"
+  button next to fullscreen (`data-testid="go-live-button"`). The view passes
+  it only when `liveAllowed`. The controls are hidden while the recording
+  player is loading, like all its controls.
 - Live starts unmuted (`LivePlayer` `playAudio`). The release is a user
   gesture, and the auto path relies on the page's earlier interaction; if
   the browser still refuses sound, the MSE player falls back to muted.
@@ -200,6 +207,12 @@ the in-view live mode below.
   `currentTime` to `liveEdgeBefore` and records it in `livePinnedTimeRef`;
   it re-pins on every live edge tick. `onTimestampUpdate` ignores the
   covered recording player while `isLiveRef` is set.
+- Controls (commit 14): hovering (desktop) or tapping (touch, hidden again
+  after 4s) shows a small pill at the bottom with a fullscreen button
+  (`live-controls`, `live-fullscreen`). Fullscreen uses the view's
+  `useFullscreen(mainLayoutRef)`, the same element as the recording
+  player's button, so the timeline stays usable. A drag that pans a zoomed
+  stream doesn't toggle the pill (`onPanning` sets `pannedRef`).
 - Switching cameras in the strip stays live on the new camera.
 - `LiveEdgeMarker` (in `RecordingView.tsx`) draws a red line across the
   timeline at the real current time, updated every second and on scroll,

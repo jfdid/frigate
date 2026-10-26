@@ -58,6 +58,7 @@ type HlsVideoPlayerProps = {
   getSnapshotUrl?: (playTime: number) => string | undefined;
   onSnapshot?: (playTime: number) => Promise<void> | void;
   toggleFullscreen?: () => void;
+  onGoLive?: () => void;
   onError?: (error: RecordingPlayerError) => void;
   onStallStart?: () => void;
   onStallEnd?: () => void;
@@ -94,6 +95,7 @@ export default function HlsVideoPlayer({
   getSnapshotUrl,
   onSnapshot,
   toggleFullscreen,
+  onGoLive,
   onError,
   onStallStart,
   onStallEnd,
@@ -544,6 +546,7 @@ export default function HlsVideoPlayer({
           fullscreen={fullscreen}
           toggleFullscreen={toggleFullscreen}
           containerRef={containerRef}
+          onGoLive={onGoLive}
         />
       )}
       <TransformComponent

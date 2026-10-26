@@ -76,6 +76,8 @@ type DynamicVideoPlayerProps = {
   onSeekToTime?: (timestamp: number, play?: boolean) => void;
   setFullResolution: React.Dispatch<React.SetStateAction<VideoResolutionType>>;
   toggleFullscreen: () => void;
+  // shows a Go live button in the player controls
+  onGoLive?: () => void;
   containerRef?: React.MutableRefObject<HTMLDivElement | null>;
   transformedOverlay?: ReactNode;
   quality?: PlaybackQuality;
@@ -101,6 +103,7 @@ export default function DynamicVideoPlayer({
   onSeekToTime,
   setFullResolution,
   toggleFullscreen,
+  onGoLive,
   containerRef,
   transformedOverlay,
   quality,
@@ -937,6 +940,7 @@ export default function DynamicVideoPlayer({
           getSnapshotUrl={getSnapshotUrlForPlus}
           onSnapshot={onDownloadSnapshot}
           toggleFullscreen={toggleFullscreen}
+          onGoLive={onGoLive}
           onError={(error) => {
             if (error == "stalled" && !isScrubbing) {
               setIsBuffering(true);
