@@ -11,7 +11,9 @@
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import type { Page, Route } from "@playwright/test";
 import { test, expect, type FrigateApp } from "../fixtures/frigate-test";
+import { PLACEHOLDER_PNG } from "../helpers/api-mocker";
 import {
   LIVE_STREAM_CONFIG,
   mockLiveStream,
@@ -131,7 +133,12 @@ async function mockRecordings(frigateApp: FrigateApp) {
   );
 }
 
-async function openAtLiveEdge(frigateApp: FrigateApp, secondsBack: number) {
+async function openAtLiveEdge(
+  frigateApp: FrigateApp,
+  secondsBack: number,
+  // extra routes, registered last so they win over the defaults
+  routes?: (page: Page) => Promise<void>,
+) {
   const page = frigateApp.page;
   await page.clock.install({ time: NOW });
   await frigateApp.installDefaults({ config: LIVE_STREAM_CONFIG });
@@ -139,6 +146,7 @@ async function openAtLiveEdge(frigateApp: FrigateApp, secondsBack: number) {
   // playback near the live edge connects the live stream ahead of time;
   // its 3s of media goes out on release(), as a real stream never runs dry
   const stream = await mockLiveStream(page);
+  await routes?.(page);
 
   const playbackTime = Math.floor(NOW.getTime() / 1000) - secondsBack;
   await frigateApp.goto(`/review?timestamp=front_door_${playbackTime}`);
@@ -414,6 +422,10 @@ for (const mobile of [false, true]) {
       await moveShuttle(frigateApp, 2);
       await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "4");
       await expect.poll(() => playbackRate(frigateApp)).toBe(4);
+      // the thumb shows the speed on desktop; a finger covers it on touch
+      await expect(frigateApp.page.getByTestId("shuttle-thumb")).toHaveText(
+        mobile ? "" : "4x ▶",
+      );
       expect((await videoState(frigateApp))?.paused).toBe(false);
 
       await moveShuttle(frigateApp, -3);
@@ -487,6 +499,289 @@ for (const mobile of [false, true]) {
       await moveShuttle(frigateApp, -2);
       await expect(activeLivePlayer(frigateApp)).toHaveCount(0);
       await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "-2");
+    });
+  });
+}
+
+// reverse runs on the preview images. These cases serve them the way the
+// server does: the current hour as cached frames, an earlier hour as a
+// 1 fps mp4 like the one the preview writer makes
+const PREVIEW_MP4 = readFileSync(
+  fileURLToPath(new URL("../fixtures/media/preview-600s.mp4", import.meta.url)),
+);
+const PREVIEW_MP4_S = 600;
+
+/**
+ * Serves a file with byte range support, as nginx does. Chrome can't seek
+ * in media served without it: every seek lands at 0.
+ */
+function fulfillWithRanges(route: Route, body: Buffer, contentType: string) {
+  const range = route
+    .request()
+    .headers()
+    ["range"]?.match(/bytes=(\d+)-(\d*)/);
+
+  if (!range) {
+    return route.fulfill({
+      contentType,
+      body,
+      headers: { "Accept-Ranges": "bytes" },
+    });
+  }
+
+  const start = Number(range[1]);
+  const end = range[2] ? Number(range[2]) : body.length - 1;
+
+  return route.fulfill({
+    status: 206,
+    contentType,
+    body: body.subarray(start, end + 1),
+    headers: {
+      "Accept-Ranges": "bytes",
+      "Content-Range": `bytes ${start}-${end}/${body.length}`,
+    },
+  });
+}
+
+/** Serves a cached frame for every second of the requested range. */
+async function mockDenseFrames(
+  page: Page,
+  { failing = () => false }: { failing?: (time: number) => boolean } = {},
+) {
+  await page.route(
+    /\/api\/preview\/[^/]+\/start\/[\d.]+\/end\/[\d.]+\/frames/,
+    (route) => {
+      const match = route
+        .request()
+        .url()
+        .match(/\/start\/([\d.]+)\/end\/([\d.]+)\//);
+      const after = Math.ceil(Number(match?.[1]));
+      const before = Math.floor(Number(match?.[2]));
+      const frames = [];
+      for (let t = after; t <= before; t++) {
+        frames.push(`preview_front_door-${t}.webp`);
+      }
+      return route.fulfill({ json: frames });
+    },
+  );
+  await page.route(/\/api\/preview\/preview_.+\/thumbnail\.webp/, (route) => {
+    const time = Number(
+      route
+        .request()
+        .url()
+        .match(/-([\d.]+)\.webp\/thumbnail/)?.[1],
+    );
+    return failing(time)
+      ? route.fulfill({ status: 404, body: "" })
+      : route.fulfill({ contentType: "image/png", body: PLACEHOLDER_PNG });
+  });
+}
+
+/** Lists a preview mp4 for [start, start + PREVIEW_MP4_S] and serves it. */
+async function mockPreviewMp4(page: Page, start: number) {
+  await page.route(
+    /\/api\/preview\/all\/start\/[\d.]+\/end\/[\d.]+$/,
+    (route) =>
+      route.fulfill({
+        json: [
+          {
+            camera: "front_door",
+            src: `/clips/previews/front_door/${start}-${start + PREVIEW_MP4_S}.mp4`,
+            type: "video/mp4",
+            start,
+            end: start + PREVIEW_MP4_S,
+          },
+        ],
+      }),
+  );
+  await page.route("**/clips/previews/**", (route) =>
+    fulfillWithRanges(route, PREVIEW_MP4, "video/mp4"),
+  );
+}
+
+const previewVideoTime = (page: Page) =>
+  page
+    .locator('[data-camera="front_door"] video')
+    .evaluate((video: HTMLVideoElement) => video.currentTime);
+
+/** Frame times the scrub preview has asked for, in order. */
+function recordFrameRequests(page: Page) {
+  const times: number[] = [];
+  page.on("request", (request) => {
+    const match = request
+      .url()
+      .match(/preview_front_door-([\d.]+)\.webp\/thumbnail/);
+    if (match) {
+      times.push(Number(match[1]));
+    }
+  });
+  return times;
+}
+
+/** Lets reverse run in small clock steps, so image loads keep up. */
+async function runReverse(frigateApp: FrigateApp, ms: number) {
+  for (let elapsed = 0; elapsed < ms; elapsed += 100) {
+    await frigateApp.page.clock.runFor(100);
+    // image loads and seeks complete in real time, not on the page clock
+    await expect
+      .poll(() =>
+        frigateApp.page.evaluate(
+          () =>
+            Array.from(document.querySelectorAll("img"))
+              .filter((img) => img.src.includes("preview_"))
+              .every((img) => img.complete) &&
+            Array.from(
+              document.querySelectorAll<HTMLVideoElement>(
+                "[data-camera] video",
+              ),
+            ).every((video) => !video.seeking),
+        ),
+      )
+      .toBe(true);
+  }
+}
+
+for (const mobile of [false, true]) {
+  const tags = mobile ? "@medium @mobile" : "@medium";
+
+  test.describe(`Recording shuttle reverse previews: ${mobile ? "mobile" : "desktop"} ${tags}`, () => {
+    test.beforeEach(({ frigateApp }) => {
+      test.skip(frigateApp.isMobile != mobile);
+    });
+
+    test("reverse in the current hour steps back through every cached frame", async ({
+      frigateApp,
+    }) => {
+      const page = frigateApp.page;
+      const requested = recordFrameRequests(page);
+      await openAtLiveEdge(frigateApp, 120, (page) => mockDenseFrames(page));
+      await waitForPlayback(frigateApp);
+      const start = Math.floor(NOW.getTime() / 1000) - 120;
+
+      // pause, then reverse at 1x and 2x
+      await moveShuttle(frigateApp, -3);
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "-2");
+      requested.length = 0;
+
+      // 3s at 2x is 6s of footage: one frame a second, newest first
+      await runReverse(frigateApp, 3000);
+
+      const distinct = [...new Set(requested)];
+      expect(distinct.length).toBeGreaterThanOrEqual(4);
+      expect(Math.min(...distinct)).toBeLessThan(start - 3);
+      // never forward while reversing
+      for (let i = 1; i < distinct.length; i++) {
+        expect(distinct[i]).toBeLessThan(distinct[i - 1]);
+      }
+    });
+
+    test("a frame that fails to load doesn't stop reverse", async ({
+      frigateApp,
+    }) => {
+      const page = frigateApp.page;
+      const requested = recordFrameRequests(page);
+      const start = Math.floor(NOW.getTime() / 1000) - 120;
+      // the first few frames behind the playhead are gone, as when the
+      // cache was cleared after the listing was fetched
+      await openAtLiveEdge(frigateApp, 120, (page) =>
+        mockDenseFrames(page, {
+          failing: (time) => time <= start && time > start - 3,
+        }),
+      );
+      await waitForPlayback(frigateApp);
+
+      await moveShuttle(frigateApp, -3);
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "-2");
+      requested.length = 0;
+
+      await runReverse(frigateApp, 4000);
+
+      // reverse carried on past the missing frames
+      expect(Math.min(...requested)).toBeLessThan(start - 4);
+    });
+
+    test("reverse in an earlier hour plays the hour's preview video backwards", async ({
+      frigateApp,
+    }) => {
+      const page = frigateApp.page;
+      // two hours back: that hour has its preview mp4
+      const hourStart = new Date(2026, 8, 2, 10, 0, 0).getTime() / 1000;
+      const previewStart = hourStart + 1;
+
+      await openAtLiveEdge(
+        frigateApp,
+        Math.floor(NOW.getTime() / 1000) - (previewStart + 300),
+        (page) => mockPreviewMp4(page, previewStart),
+      );
+      await waitForPlayback(frigateApp);
+
+      const previewVideo = page.locator('[data-camera="front_door"] video');
+      await expect(previewVideo).toBeAttached();
+
+      await moveShuttle(frigateApp, -5);
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "-8");
+
+      // the preview shows, positioned near the playhead
+      await expect(previewVideo).toBeVisible();
+      await expect
+        .poll(() =>
+          previewVideo.evaluate((video: HTMLVideoElement) => video.currentTime),
+        )
+        .toBeGreaterThan(250);
+      const before = await previewVideo.evaluate(
+        (video: HTMLVideoElement) => video.currentTime,
+      );
+
+      // 3s at 8x is 24s of footage
+      await runReverse(frigateApp, 3000);
+
+      await expect
+        .poll(() =>
+          previewVideo.evaluate((video: HTMLVideoElement) => video.currentTime),
+        )
+        .toBeLessThan(before - 15);
+    });
+
+    test("reverse carries on into the previous hour's preview", async ({
+      frigateApp,
+    }) => {
+      const page = frigateApp.page;
+      const hourStart = new Date(2026, 8, 2, 12, 0, 0).getTime() / 1000;
+      // the previous hour's preview covers its last ten minutes
+      const previewStart = hourStart - PREVIEW_MP4_S;
+
+      await openAtLiveEdge(
+        frigateApp,
+        Math.floor(NOW.getTime() / 1000) - (hourStart + 20),
+        async (page) => {
+          await mockDenseFrames(page);
+          await mockPreviewMp4(page, previewStart);
+        },
+      );
+      await waitForPlayback(frigateApp);
+
+      // 1x, pause, then reverse up to 16x
+      await moveShuttle(frigateApp, -6);
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "-16");
+
+      // 3s at 16x is 48s back: past the start of the hour
+      await runReverse(frigateApp, 3000);
+
+      // the previous hour's preview took over, near its end, and keeps
+      // running back
+      await expect(
+        page.locator('[data-camera="front_door"] video'),
+      ).toBeVisible();
+      await expect
+        .poll(() => previewVideoTime(page))
+        .toBeGreaterThan(PREVIEW_MP4_S - 60);
+      const crossed = await previewVideoTime(page);
+      expect(crossed).toBeLessThan(PREVIEW_MP4_S);
+
+      await runReverse(frigateApp, 2000);
+      await expect
+        .poll(() => previewVideoTime(page))
+        .toBeLessThan(crossed - 15);
     });
   });
 }

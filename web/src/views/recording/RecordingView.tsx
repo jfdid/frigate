@@ -547,9 +547,13 @@ export function RecordingView({
 
   useEffect(() => {
     if (scrubbing || shuttle.reversing || exportRange || debugReplayRange) {
+      // a drag may wander a little past its hour; reverse moves steadily
+      // back and would show a frozen preview for the whole slack
+      const slackBefore = shuttle.reversing ? 0 : 60;
+
       if (
         currentTime > currentTimeRange.before + 60 ||
-        currentTime < currentTimeRange.after - 60
+        currentTime < currentTimeRange.after - slackBefore
       ) {
         // the player rebuilds its source against playbackStart, and a
         // stale anchor resolves to no startPosition, dropping playback

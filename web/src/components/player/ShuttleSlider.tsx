@@ -1,6 +1,8 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import * as SliderPrimitive from "@radix-ui/react-slider";
+import { isDesktop } from "react-device-detect";
+import { LuPause } from "react-icons/lu";
 import { SHUTTLE_SPEEDS } from "@/hooks/use-shuttle";
 import { cn } from "@/lib/utils";
 
@@ -78,8 +80,6 @@ export default function ShuttleSlider({
       data-rate={isLive ? "live" : rate}
     >
       <div className="relative flex-1">
-        {/* the pause position */}
-        <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 h-4 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded bg-muted-foreground" />
         {/* no filled range: the ui Slider fills from the left edge, which
             reads as an amount rather than a distance from the middle */}
         <SliderPrimitive.Root
@@ -97,7 +97,22 @@ export default function ShuttleSlider({
           }}
         >
           <SliderPrimitive.Track className="relative h-2 w-full grow overflow-hidden rounded-full bg-secondary" />
-          <SliderPrimitive.Thumb className="block h-5 w-5 cursor-pointer rounded-full border-2 border-primary bg-primary ring-offset-background transition-colors data-[disabled]:pointer-events-none data-[disabled]:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" />
+          {/* the pause position, under the thumb */}
+          <div className="pointer-events-none absolute left-1/2 top-1/2 h-4 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded bg-muted-foreground" />
+          {/* on desktop the thumb shows the speed; on touch screens a
+              finger covers it, so it stays a plain dot */}
+          <SliderPrimitive.Thumb
+            className={cn(
+              "cursor-pointer rounded-full border-2 border-primary bg-primary ring-offset-background transition-colors data-[disabled]:pointer-events-none data-[disabled]:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+              isDesktop
+                ? "flex h-6 min-w-6 items-center justify-center whitespace-nowrap px-1.5 text-[11px] font-medium leading-none text-primary-foreground"
+                : "block h-5 w-5",
+            )}
+            data-testid="shuttle-thumb"
+          >
+            {isDesktop &&
+              (rate == 0 && !isLive ? <LuPause className="size-3" /> : label)}
+          </SliderPrimitive.Thumb>
         </SliderPrimitive.Root>
       </div>
       <div
