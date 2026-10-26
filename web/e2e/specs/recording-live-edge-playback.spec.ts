@@ -362,3 +362,131 @@ test.describe("Recording live edge playback: mobile @medium @mobile", () => {
     await expect(activeLivePlayer(frigateApp)).toBeVisible();
   });
 });
+
+const shuttle = (frigateApp: FrigateApp) =>
+  frigateApp.page.getByTestId("shuttle");
+const shuttleThumb = (frigateApp: FrigateApp) =>
+  shuttle(frigateApp).getByRole("slider");
+
+/** The handle's offset from the top of the timeline's scrolled content. */
+const handleOffset = (frigateApp: FrigateApp) =>
+  frigateApp.page
+    .locator('[role="scrollbar"] .rounded-full')
+    .first()
+    .evaluate((el) => {
+      const track = el.closest(".overflow-y-auto");
+      return track
+        ? el.getBoundingClientRect().top -
+            track.getBoundingClientRect().top +
+            track.scrollTop
+        : 0;
+    });
+
+/** Moves the shuttle by a number of stops, negative to the left. */
+async function moveShuttle(frigateApp: FrigateApp, stops: number) {
+  await shuttleThumb(frigateApp).focus();
+
+  for (let i = 0; i < Math.abs(stops); i++) {
+    await frigateApp.page.keyboard.press(
+      stops > 0 ? "ArrowRight" : "ArrowLeft",
+    );
+  }
+}
+
+const playbackRate = (frigateApp: FrigateApp) =>
+  frigateApp.page.evaluate(() => document.querySelector("video")?.playbackRate);
+
+for (const mobile of [false, true]) {
+  const tags = mobile ? "@medium @mobile" : "@medium";
+
+  test.describe(`Recording shuttle: ${mobile ? "mobile" : "desktop"} ${tags}`, () => {
+    test.beforeEach(({ frigateApp }) => {
+      test.skip(frigateApp.isMobile != mobile);
+    });
+
+    test("right of the middle plays faster, the middle pauses", async ({
+      frigateApp,
+    }) => {
+      await openAtLiveEdge(frigateApp, 120);
+      await waitForPlayback(frigateApp);
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "1");
+
+      await moveShuttle(frigateApp, 2);
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "4");
+      await expect.poll(() => playbackRate(frigateApp)).toBe(4);
+      expect((await videoState(frigateApp))?.paused).toBe(false);
+
+      await moveShuttle(frigateApp, -3);
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "0");
+      await expect(frigateApp.page.getByTestId("shuttle-label")).toHaveText(
+        "Paused",
+      );
+      await expect
+        .poll(async () => (await videoState(frigateApp))?.paused)
+        .toBe(true);
+    });
+
+    test("the player's speed menu shows on the shuttle", async ({
+      frigateApp,
+    }) => {
+      await openAtLiveEdge(frigateApp, 120);
+      await waitForPlayback(frigateApp);
+
+      await frigateApp.page.evaluate(() => {
+        const video = document.querySelector("video");
+        if (video) {
+          video.playbackRate = 8;
+        }
+      });
+
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "8");
+    });
+
+    test("left of the middle runs back in time, then plays forward again", async ({
+      frigateApp,
+    }) => {
+      await openAtLiveEdge(frigateApp, 120);
+      await waitForPlayback(frigateApp);
+      const startOffset = await handleOffset(frigateApp);
+
+      // 1x, pause, then reverse at 1, 2, 4, 8 and 16x
+      await moveShuttle(frigateApp, -6);
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "-16");
+      await expect(frigateApp.page.getByTestId("shuttle-label")).toHaveText(
+        "◀ 16x",
+      );
+
+      // 5s at 16x is 80s back: the handle moves down the timeline
+      await frigateApp.page.clock.runFor(5000);
+      await expect
+        .poll(() => handleOffset(frigateApp))
+        .toBeGreaterThan(startOffset + 10);
+      expect((await videoState(frigateApp))?.paused).toBe(true);
+
+      // back through pause to 1x forward
+      await moveShuttle(frigateApp, 6);
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "1");
+      await waitForPlayback(frigateApp);
+      await expect.poll(() => playbackRate(frigateApp)).toBe(1);
+    });
+
+    test("reverse from live leaves live and rewinds", async ({
+      frigateApp,
+    }) => {
+      const stream = await openAtLiveEdge(frigateApp, 40);
+      await waitForPlayback(frigateApp);
+      await playOutFootage(frigateApp);
+      await expect(activeLivePlayer(frigateApp)).toBeVisible();
+      stream.release();
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "live");
+
+      // live already runs in real time: right of the middle stays live
+      await moveShuttle(frigateApp, 1);
+      await expect(activeLivePlayer(frigateApp)).toBeVisible();
+
+      await moveShuttle(frigateApp, -2);
+      await expect(activeLivePlayer(frigateApp)).toHaveCount(0);
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "-2");
+    });
+  });
+}

@@ -101,6 +101,12 @@
     "mute": "Mute",
     "unmute": "Unmute"
   },
+  "shuttle": {
+    "label": "Playback speed and direction",
+    "paused": "Paused",
+    "forward": "{{rate}}x ▶",
+    "reverse": "◀ {{rate}}x"
+  },
   "cameraView": {
     "controls": "Controls",
     "controlsAria": "Open the camera's live controls: PTZ, two-way talk and settings"

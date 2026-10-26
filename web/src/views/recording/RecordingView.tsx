@@ -89,6 +89,8 @@ import {
 import ShareTimestampDialog from "@/components/overlay/ShareTimestampDialog";
 import { shareOrCopy } from "@/utils/browserUtil";
 import { createRecordingReviewUrl } from "@/utils/recordingReviewUrl";
+import { useShuttle } from "@/hooks/use-shuttle";
+import ShuttleSlider from "@/components/player/ShuttleSlider";
 
 const DATA_REFRESH_TIME = 600000; // 10 minutes
 
@@ -451,6 +453,25 @@ export function RecordingView({
     mainCamera,
   ]);
 
+  // shuttle: pause, forward and reverse speed in one control. It seeks
+  // like the view's own seek controls (manuallySetCurrentTime, below)
+  const shuttleSeekRef = useRef<(time: number, play: boolean) => void>(
+    () => {},
+  );
+  const shuttleSeek = useCallback(
+    (time: number, play: boolean) => shuttleSeekRef.current(time, play),
+    [],
+  );
+  const shuttle = useShuttle({
+    isLive,
+    leaveLive,
+    scrubbing,
+    currentTime,
+    setCurrentTime,
+    earliestTime: effectiveTimeRange.after,
+    seekTo: shuttleSeek,
+  });
+
   // keep the handle at the top of the track as the live edge grows
   useEffect(() => {
     if (isLive && !scrubbing) {
@@ -525,7 +546,7 @@ export function RecordingView({
   );
 
   useEffect(() => {
-    if (scrubbing || exportRange || debugReplayRange) {
+    if (scrubbing || shuttle.reversing || exportRange || debugReplayRange) {
       if (
         currentTime > currentTimeRange.before + 60 ||
         currentTime < currentTimeRange.after - 60
@@ -548,6 +569,7 @@ export function RecordingView({
   }, [
     currentTime,
     scrubbing,
+    shuttle.reversing,
     timeRange,
     currentTimeRange,
     updateSelectedSegment,
@@ -588,6 +610,10 @@ export function RecordingView({
     [currentTimeRange, updateSelectedSegment, leaveLive],
   );
 
+  useEffect(() => {
+    shuttleSeekRef.current = manuallySetCurrentTime;
+  }, [manuallySetCurrentTime]);
+
   const onClipPrevious = useCallback(
     (diff: number) => {
       manuallySetCurrentTime(
@@ -627,8 +653,9 @@ export function RecordingView({
   }, [navigate, recording?.navigationSource]);
 
   useEffect(() => {
-    // live mode owns the handle; leaving it runs this again to seek
-    if (isLive) {
+    // live mode owns the handle; leaving it runs this again to seek.
+    // Shuttle reverse owns it too, and seeks itself when it ends
+    if (isLive || shuttle.reversing) {
       return;
     }
 
@@ -797,6 +824,8 @@ export function RecordingView({
     useResizeObserver(cameraLayoutRef);
   const [{ width: previewRowWidth, height: previewRowHeight }] =
     useResizeObserver(previewRowRef);
+  const shuttleBarRef = useRef<HTMLDivElement | null>(null);
+  const [{ height: shuttleBarHeight }] = useResizeObserver(shuttleBarRef);
 
   const useHeightBased = useMemo(() => {
     if (!containerWidth || !containerHeight) {
@@ -816,9 +845,9 @@ export function RecordingView({
         ? containerWidth - previewRowWidth
         : containerWidth;
     const availableHeight =
-      mainCameraAspect != "tall" && previewRowHeight
+      (mainCameraAspect != "tall" && previewRowHeight
         ? containerHeight - previewRowHeight
-        : containerHeight;
+        : containerHeight) - (shuttleBarHeight ?? 0);
 
     const availableAspectRatio = availableWidth / availableHeight;
 
@@ -830,6 +859,7 @@ export function RecordingView({
     containerHeight,
     previewRowWidth,
     previewRowHeight,
+    shuttleBarHeight,
     getCameraAspect,
     mainCamera,
     mainCameraAspect,
@@ -1172,7 +1202,7 @@ export function RecordingView({
           <div
             ref={cameraLayoutRef}
             className={cn(
-              "flex flex-1 flex-wrap overflow-hidden",
+              "flex flex-1 flex-col overflow-hidden",
               isDesktop
                 ? "min-w-0 px-4"
                 : "portrait:max-h-[50dvh] portrait:flex-shrink-0 portrait:flex-grow-0 portrait:basis-auto",
@@ -1180,7 +1210,7 @@ export function RecordingView({
           >
             <div
               className={cn(
-                "flex size-full items-center",
+                "flex min-h-0 w-full flex-1 items-center",
                 mainCameraAspect == "tall"
                   ? "flex-row justify-evenly"
                   : "flex-col justify-center gap-2",
@@ -1247,10 +1277,12 @@ export function RecordingView({
                   onSeekToTime={manuallySetCurrentTime}
                   onControllerReady={(controller) => {
                     mainControllerRef.current = controller;
+                    shuttle.onControllerReady(controller);
                   }}
                   isScrubbing={
                     scrubbing ||
                     isLive ||
+                    shuttle.reversing ||
                     exportMode == "timeline" ||
                     exportMode == "timeline_multi" ||
                     debugReplayMode == "timeline"
@@ -1328,6 +1360,14 @@ export function RecordingView({
                   <div className="w-2" />
                 </div>
               )}
+            </div>
+            <div ref={shuttleBarRef} className="flex-shrink-0 pt-2">
+              <ShuttleSlider
+                rate={shuttle.rate}
+                isLive={isLive}
+                disabled={exportMode != "none" || debugReplayMode != "none"}
+                onRateChange={shuttle.setRate}
+              />
             </div>
           </div>
           <Timeline

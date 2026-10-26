@@ -64,6 +64,10 @@ export class DynamicVideoController {
     this.playerController.pause();
   }
 
+  getPlayer(): HTMLVideoElement {
+    return this.playerController;
+  }
+
   isPlaying(): boolean {
     return !this.playerController.paused && !this.playerController.ended;
   }

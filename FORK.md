@@ -61,8 +61,9 @@ are in `FORK.local.md`, which is not committed.
 | 11 | Camera view | live: open cameras in the Camera view | One screen per camera: dashboard tiles, Birdseye and `/#camera` links open the recording view already live, the classic live page moves behind a Controls button. Also: the handle reads "Live" while live (a pinned time lagged the picture), and only user actions leave live |
 | 13 | Backend | nginx: don't warn about the go2rtc stream flag on every request | Upstream bug (from the v0.18.2 security fix): every authenticated request logged `using uninitialized "go2rtc_stream_proxy" variable` |
 | 14 | Camera view | recording view: fullscreen controls while live and a Go live button | Live had no controls, so no way to go fullscreen; going live needed a drag to the top of a possibly long timeline |
+| 15 | Camera view | recording view: Blue Iris style shuttle for speed and reverse | One slider under the video: pause in the middle, forward or reverse at 1 to 16x. Kept on its own branch (`feature/shuttle`) so it can be dropped |
 
-Commits 1 to 7, 9 to 12 and 14 are frontend only (`web/`). Commit 8 is backend only
+Commits 1 to 7, 9 to 12, 14 and 15 are frontend only (`web/`). Commit 8 is backend only
 (`frigate/`), and commit 13 only touches the nginx config (`docker/`). Documentation commits (`docs: ...`) only touch this file and
 `AGENTS.md`.
 
@@ -332,6 +333,45 @@ and doesn't name it.
 - Planned step 2, waiting on the maintainer's list: bring the classic page's
   features the maintainer uses into the Camera view, after which the classic
   page is only a fallback.
+
+### Shuttle (commit 15, branch `feature/shuttle`)
+
+A Blue Iris style shuttle slider in a bar under the video: paused in the
+middle, forward to the right, reverse to the left, at 1, 2, 4, 8 and 16x.
+It stays where it is left. To drop the feature, drop this commit; nothing
+else depends on it.
+
+- Logic: `web/src/hooks/use-shuttle.ts`. UI:
+  `web/src/components/player/ShuttleSlider.tsx`. The only upstream file
+  touched outside `RecordingView` is `DynamicVideoController.ts`, which gains
+  a `getPlayer()` accessor.
+- **Forward** sets the `<video>` element's `playbackRate` and the
+  `playbackRate` overlay state, which `HlsVideoPlayer` reapplies whenever its
+  source reloads and shows in its speed menu.
+- **Reverse:** browsers can't play video backwards, so reverse runs on preview
+  images instead.
+  - The view's `currentTime` steps back on a `requestAnimationFrame` clock, committed every 100ms.
+  - `shuttle.reversing` joins the player's `isScrubbing`, and the view's scrub effect, which shows preview frames as a drag does.
+  - The release-seek effect skips while reversing, the same way it skips while live.
+  - Previews are 1 to 2 fps, so 1x reverse is a slideshow; 4x and up looks smooth.
+- **Ending reverse:**
+  - From the shuttle: seeks with `manuallySetCurrentTime`, paused or playing, after the player has left scrubbing mode.
+  - Grabbing the timeline handle hands over to the drag.
+  - Reaching the start of the view's range pauses there.
+- **What the shuttle shows** follows the player's own `play`, `pause` and
+  `ratechange` events, so the player's buttons, its speed menu and
+  hotkeys move the slider. Pauses the view causes itself are ignored: a drag,
+  live, reverse, or a chunk ending.
+- **Live:** the slider reads "Live". Right of the middle does nothing (live
+  is real time). Left leaves live and rewinds from the live edge. Forward
+  playback that runs into the newest footage goes live as before.
+- **Layout:** the camera area (`cameraLayoutRef`) is now a column, and the
+  bar sits below the player column. `useHeightBased` subtracts the bar's
+  measured height, as it does for the preview row.
+- Disabled in export and debug replay modes.
+- Test ids: `shuttle` (with `data-rate`: a number, or `live`) and
+  `shuttle-label`. Strings: `views/events` `shuttle.*`. Tests: the
+  "Recording shuttle" cases in `recording-live-edge-playback.spec.ts`.
 
 ## 4. Scrubbing fixes (commits 6 and 7)
 
