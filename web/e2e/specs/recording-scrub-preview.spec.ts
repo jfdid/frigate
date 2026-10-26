@@ -23,7 +23,13 @@ async function openRecordingView(
   {
     frameIntervalS = FRAME_INTERVAL_S,
     framesStopBeforeEndS = 0,
-  }: { frameIntervalS?: number; framesStopBeforeEndS?: number } = {},
+    frameMissing = () => false,
+  }: {
+    frameIntervalS?: number;
+    framesStopBeforeEndS?: number;
+    // listed but gone from the cache, as after the hourly mp4 is written
+    frameMissing?: (time: number) => boolean;
+  } = {},
 ) {
   await frigateApp.page.route("**/api/*/recordings**", (route) =>
     route.fulfill({ json: [] }),
@@ -100,9 +106,17 @@ async function openRecordingView(
     return route.fulfill({ json: frames });
   });
 
-  await frigateApp.page.route("**/thumbnail.webp", (route) =>
-    route.fulfill({ contentType: "image/png", body: PLACEHOLDER_PNG }),
-  );
+  await frigateApp.page.route("**/thumbnail.webp", (route) => {
+    const time = Number(
+      route
+        .request()
+        .url()
+        .match(/preview_front_door-([\d.]+)\.webp/)?.[1],
+    );
+    return frameMissing(time)
+      ? route.fulfill({ status: 404, body: "" })
+      : route.fulfill({ contentType: "image/png", body: PLACEHOLDER_PNG });
+  });
 
   await frigateApp.goto(`/review?timestamp=front_door_${playbackTime}`);
 }
@@ -411,5 +425,74 @@ test.describe("Recording scrub preview: mobile @medium @mobile", () => {
     }
 
     await runScrubCase(frigateApp, { afterLiveEdgeGrows: true });
+  });
+});
+
+test.describe("Recording scrub preview missing frames: desktop @medium", () => {
+  test("a frame that fails to load doesn't freeze the scrub preview", async ({
+    frigateApp,
+  }) => {
+    if (frigateApp.isMobile) {
+      test.skip();
+      return;
+    }
+
+    const page = frigateApp.page;
+    await page.clock.install({ time: NOW });
+    await frigateApp.installDefaults();
+    // a band of frames behind the playhead is listed but gone
+    const missing = (time: number) =>
+      time < playbackTime - 60 && time > playbackTime - 200;
+    let missingFrameFailed = false;
+    page.on("requestfinished", (request) => {
+      const time = Number(
+        request.url().match(/preview_front_door-([\d.]+)\.webp/)?.[1],
+      );
+      if (missing(time)) {
+        missingFrameFailed = true;
+      }
+    });
+    await openRecordingView(frigateApp, { frameMissing: missing });
+
+    const handle = page.locator('[role="scrollbar"] .rounded-full').first();
+    await expect(handle).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("video").first()).toBeAttached({
+      timeout: 15_000,
+    });
+    const box = await handle.boundingBox();
+    if (!box) {
+      throw new Error("handlebar has no bounding box");
+    }
+
+    const mainFrame = () =>
+      page.evaluate(() => {
+        const img = Array.from(document.querySelectorAll("img")).find((img) =>
+          (img.getAttribute("src") ?? "").includes("preview_front_door-"),
+        );
+        return {
+          time: Number(
+            img?.getAttribute("src")?.match(/preview_front_door-([\d.]+)/)?.[1],
+          ),
+          loaded: !!img && img.complete && img.naturalWidth > 0,
+        };
+      });
+
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await waitForDragStart(page);
+
+    // into the missing band (30px is about 110s at the default zoom)
+    await page.mouse.move(x, y + 30, { steps: 3 });
+    await expect.poll(() => missingFrameFailed).toBe(true);
+
+    // and out the other side: the preview follows again
+    await page.mouse.move(x, y + 90, { steps: 3 });
+    await expect
+      .poll(async () => (await mainFrame()).time, { timeout: 3_000 })
+      .toBeLessThan(playbackTime - 200);
+    await expect.poll(async () => (await mainFrame()).loaded).toBe(true);
+    await page.mouse.up();
   });
 });

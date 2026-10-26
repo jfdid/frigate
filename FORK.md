@@ -62,9 +62,11 @@ are in `FORK.local.md`, which is not committed.
 | 13 | Backend | nginx: don't warn about the go2rtc stream flag on every request | Upstream bug (from the v0.18.2 security fix): every authenticated request logged `using uninitialized "go2rtc_stream_proxy" variable` |
 | 14 | Camera view | recording view: fullscreen controls while live and a Go live button | Live had no controls, so no way to go fullscreen; going live needed a drag to the top of a possibly long timeline |
 | 15 | Camera view | recording view: Blue Iris style shuttle for speed and reverse | One slider under the video: pause in the middle, forward or reverse at 1 to 16x. Kept on its own branch (`feature/shuttle`) so it can be dropped |
+| 16 | Previews | previews: a frame every second, and skip frames that fail to load | Still scenes and stationary objects got one preview frame every 30s, so scrubbing (and reverse) through them showed almost nothing; one missing frame froze the scrub preview for good |
 
 Commits 1 to 7, 9 to 12, 14 and 15 are frontend only (`web/`). Commit 8 is backend only
-(`frigate/`), and commit 13 only touches the nginx config (`docker/`). Documentation commits (`docs: ...`) only touch this file and
+(`frigate/`), commit 13 only touches the nginx config (`docker/`), and commit
+16 touches the preview writer and the frames player. Documentation commits (`docs: ...`) only touch this file and
 `AGENTS.md`.
 
 ## 3. Live edge and Camera view (commits 1 to 5, 9 to 11)
@@ -453,10 +455,68 @@ grep "open files" /proc/$P/limits     # expect 65536, not 1024
 docker exec $C ls /tmp/cache/preview_frames \
   | sed -nE 's/^preview_(.*)-([0-9]+)\.[0-9]*\.webp$/\1 \2/p' \
   | awk -v now=$(date +%s) '{if($2>t[$1])t[$1]=$2} END{for(c in t) printf "%-20s %ds ago\n", c, now-t[c]}'
-# expect every camera at 30s or less
+# expect every camera at a few seconds or less (30s or less before commit 16)
 ```
 
 Confirmed on a real 11-camera install on 2026-10-15.
+
+### Preview frames every second (commit 16)
+
+**Symptom.** Scrubbing, and the shuttle's reverse, showed one frame every 30s
+or nothing at all, often in slots where the main (HD) stream was recorded.
+
+**Causes found.**
+
+1. `PreviewRecorder.should_write_frame` (`frigate/output/preview.py`) only
+   wrote a frame (at 1 fps, 2 with a moving car) while there were motion
+   boxes or *active* objects, else one every 30s. A stationary object (a
+   parked car, a person standing still) is not active, but it still keeps
+   the main stream recording as a detection. So exactly those HD slots got
+   30s previews. Motion and objects come from the detect stream; which
+   streams are recorded doesn't change preview generation.
+2. `PreviewFramesController` (`web/src/components/player/PreviewPlayer.tsx`)
+   only finishes a seek in the image's `onLoad`. A frame that failed to load
+   (listed, then deleted from the cache when the hourly mp4 was written)
+   never finished, so every later scrub only queued itself: the preview froze
+   until the view was reopened.
+3. Not fixed, worth knowing: when the output process falls behind, a frame's
+   shared memory slot is reused before it is read, `get()` returns `None`
+   and the frame is skipped for previews too (`frigate/output/output.py`).
+   Many in a row log `Failed to retrieve many frames ... consider increasing
+   SHM size`.
+
+**Fix.**
+
+- `should_write_frame` writes a frame every second (2 per second with a
+  moving car) regardless of motion. The first frame after start now also
+  sets `last_output_time`, so a second frame can't follow 0.2s later.
+- The frames player has `onError`: the failed frame goes into
+  `failedFrames` and is skipped from then on, a pending scrub carries on,
+  and otherwise the last frame that loaded (`lastLoadedSrc`; `naturalWidth >
+  0`, since `complete` is also true for a broken image) is shown again.
+
+**Costs.** About 3600 cached frames per camera per hour instead of a few
+hundred, in `/tmp/cache/preview_frames` (usually tmpfs, so RAM): roughly
+5 to 15 KB each, 20 to 55 MB per camera before the hourly mp4 replaces them.
+The hourly mp4 keeps its bitrate target, so its size is about the same; a
+still hour now spends that budget on 3600 frames instead of 120, and gets a
+keyframe every 40s instead of every 20 minutes. Event GIFs for the current
+hour play each cached frame for 0.12s, so still stretches inside an event
+now play at a steady speed.
+
+**Check on the server.**
+
+```bash
+C=frigate   # your container name
+# frames per camera in the last 5 minutes: expect about 300 each
+docker exec $C ls /tmp/cache/preview_frames \
+  | sed -nE 's/^preview_(.*)-([0-9]+)\.[0-9]*\.webp$/\1 \2/p' \
+  | awk -v since=$(( $(date +%s) - 300 )) '$2>=since{n[$1]++} END{for(c in n) printf "%-20s %d\n", c, n[c]}'
+# cache size (tmpfs): watch it near the end of an hour
+docker exec $C sh -c 'df -h /tmp/cache; du -sh /tmp/cache/preview_frames'
+# frames dropped because the output process fell behind
+docker logs $C 2>&1 | grep -c "Failed to retrieve many frames"
+```
 
 ## 6. Tests
 
@@ -464,8 +524,8 @@ Confirmed on a real 11-camera install on 2026-10-15.
 
 | Spec | Covers |
 |---|---|
-| `specs/recording-scrub-preview.spec.ts` | Preview follows a held handle, also after the edge grows; a tick doesn't drop a held handle; newest frame fallback; preview catches up when the handle stops; the edge keeps growing after release. Desktop and mobile |
-| `specs/camera-view.spec.ts` | A dashboard tile and a `/#camera` link open the Camera view live (handle reads Live, stream plays); Back returns to the dashboard; Controls opens the classic page; the Live button goes live in place after leaving. Desktop and mobile |
+| `specs/recording-scrub-preview.spec.ts` | Preview follows a held handle, also after the edge grows; a tick doesn't drop a held handle; newest frame fallback; preview catches up when the handle stops; the edge keeps growing after release; a frame that fails to load (404) doesn't freeze the preview. Desktop and mobile |
+| `specs/camera-view.spec.ts` | A dashboard tile and a `/#camera` link open the Camera view live (handle reads Live, stream plays); Back returns to the dashboard; Controls opens the classic page; Desktop and mobile |
 | `specs/recording-live-handoff.spec.ts` | Live mode: releasing at the top plays live in the view (loading notice, then playing, unmuted, URL unchanged, stream connected while still held); releasing lower stays; leaving the zone cancels; dragging down leaves live; a press without a drag stays live; a timeline tap leaves live; the scroll wheel zooms the live stream. Desktop and mobile, plus a real touch drag through Chromium's DevTools protocol and the live edge marker position |
 | `specs/recording-live-edge-playback.spec.ts` | Real HLS playback through hls.js: playback that runs into the newest footage carries on live; a paused player stays paused; playback continues from the playhead across a tick. Desktop and mobile |
 | `helpers/live-stream-mocker.ts` | Fake go2rtc MSE socket that streams `fixtures/media/live-3s.mp4` (3s 320x180 H.264 baseline, fragmented, codecs `avc1.42C01E`), so a live player really plays. Media goes out on `release()`; the clip is short, so release it once the player should be showing. Use with `LIVE_STREAM_CONFIG`, which restreams front_door through go2rtc |
@@ -499,7 +559,9 @@ upstream `dev` too.
 
 ### Backend unit tests
 
-`python3 -u -m unittest frigate.test.test_output_frame_map_errors`. Upstream
+`python3 -u -m unittest frigate.test.test_output_frame_map_errors
+frigate.test.test_preview_recorder` (the second covers commit 16's frame
+rate: still scene, stationary object, motion, moving car). Upstream
 runs these inside the dev container. On a machine without Docker or system
 pip, use a throwaway venv:
 
