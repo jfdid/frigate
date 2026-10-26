@@ -338,21 +338,13 @@ class PreviewRecorder:
         if (frame_time - self.last_output_time) < 1 / preview_output_fps:
             return False
 
-        # send frame if a non-stationary object is in a zone
-        if len(active_objs) > 0:
-            self.last_output_time = frame_time
-            return True
-
-        if len(motion_boxes) > 0:
-            self.last_output_time = frame_time
-            return True
-
-        # ensure that at least 2 frames are written every minute
-        if frame_time - self.last_output_time > 30:
-            self.last_output_time = frame_time
-            return True
-
-        return False
+        # write every second, with or without motion: scrubbing and reverse
+        # playback need a frame for each second of footage. Only writing
+        # on motion or active objects left a still scene, or a stationary
+        # object that keeps the main stream recording, with one frame
+        # every 30s
+        self.last_output_time = frame_time
+        return True
 
     def write_frame_to_cache(self, frame_time: float, frame: np.ndarray) -> None:
         # resize yuv frame
@@ -395,6 +387,7 @@ class PreviewRecorder:
         # always write the first frame
         if self.start_time == 0:
             self.start_time = frame_time
+            self.last_output_time = frame_time
             self.output_frames.append(frame_time)
             self.write_frame_to_cache(frame_time, frame)
             return

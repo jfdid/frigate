@@ -538,6 +538,11 @@ function PreviewFramesPlayer({
     controller.finishedSeeking();
   }, [controller]);
 
+  const onImageError = useCallback(() => {
+    setFirstLoad(false);
+    controller?.frameFailed();
+  }, [controller]);
+
   useEffect(() => {
     if (!controller) {
       return;
@@ -566,6 +571,7 @@ function PreviewFramesPlayer({
         className={`size-full rounded-lg bg-black object-contain md:rounded-2xl`}
         loading="lazy"
         onLoad={onImageLoaded}
+        onError={onImageError}
       />
       {previewFrames?.length === 0 && (
         <div className="-y-translate-1/2 align-center absolute inset-x-0 top-1/2 rounded-lg bg-background_alt text-center text-primary dark:bg-black md:rounded-2xl">
@@ -578,8 +584,9 @@ function PreviewFramesPlayer({
 }
 
 // how far past the newest cached frame a scrub still shows it; the preview
-// writer caches at least one frame every 30s while the camera is up, plus
-// the frames listing refreshes on the 15s live edge tick
+// writer caches a frame every second while the camera is up (every 30s in a
+// still scene upstream), and the frames listing refreshes on the 15s live
+// edge tick
 const NEWEST_FRAME_REACH_S = 60;
 
 class PreviewFramesController extends PreviewController {
@@ -588,6 +595,14 @@ class PreviewFramesController extends PreviewController {
   seeking: boolean = false;
   private timeToSeek: number | undefined = undefined;
   private setCurrentFrame: (src: string) => void;
+  // the frame being loaded, and the last one that loaded
+  private loadingFrame: number | undefined = undefined;
+  private lastLoadedSrc: string | undefined = undefined;
+  // frames that failed to load, e.g. deleted from the cache by the hourly
+  // preview mp4 after the listing was fetched. Skipped from then on: a
+  // seek only finishes when its image loads, so a failed one used to
+  // leave every later scrub waiting for good
+  private failedFrames = new Set<number>();
 
   constructor(
     camera: string,
@@ -606,12 +621,15 @@ class PreviewFramesController extends PreviewController {
       return false;
     }
 
-    // past the newest cached frame (a still scene only caches one every
-    // 30s, so it can trail the live edge) show that frame rather than
-    // leaving whatever an earlier scrub position put up
-    const newest = this.frameTimes.at(-1);
+    // past the newest cached frame (the listing refreshes every 15s, so it
+    // can trail the live edge) show that frame rather than leaving whatever
+    // an earlier scrub position put up
+    const frameTimes = this.failedFrames.size
+      ? this.frameTimes.filter((p) => !this.failedFrames.has(p))
+      : this.frameTimes;
+    const newest = frameTimes.at(-1);
     const frame =
-      this.frameTimes.find((p) => {
+      frameTimes.find((p) => {
         return time <= p;
       }) ??
       (newest !== undefined && time - newest <= NEWEST_FRAME_REACH_S
@@ -629,6 +647,7 @@ class PreviewFramesController extends PreviewController {
 
       if (this.imgController.current.src != newSrc) {
         this.imgController.current.src = newSrc;
+        this.loadingFrame = frame;
         this.seeking = true;
       }
     }
@@ -641,11 +660,20 @@ class PreviewFramesController extends PreviewController {
       return false;
     }
 
+    // complete is also true for a broken image; only a decoded one has a size
+    if (
+      this.imgController.current.complete &&
+      this.imgController.current.naturalWidth > 0
+    ) {
+      this.lastLoadedSrc = this.imgController.current.src;
+    }
+
     if (this.timeToSeek) {
       const newSrc = `${baseUrl}api/preview/preview_${this.camera}-${this.timeToSeek}.webp/thumbnail.webp`;
 
       if (this.imgController.current.src != newSrc) {
         this.imgController.current.src = newSrc;
+        this.loadingFrame = this.timeToSeek;
         this.setCurrentFrame(newSrc);
       } else {
         this.timeToSeek = undefined;
@@ -658,5 +686,39 @@ class PreviewFramesController extends PreviewController {
 
   override setNewPreviewStartTime(time: number) {
     this.timeToSeek = time;
+  }
+
+  /** The frame being loaded failed: skip it and carry on. */
+  frameFailed() {
+    if (!this.imgController.current) {
+      return;
+    }
+
+    if (this.loadingFrame !== undefined) {
+      this.failedFrames.add(this.loadingFrame);
+    }
+
+    if (
+      this.timeToSeek !== undefined &&
+      !this.failedFrames.has(this.timeToSeek)
+    ) {
+      // a newer scrub is waiting: load that instead
+      this.finishedSeeking();
+      return;
+    }
+
+    this.timeToSeek = undefined;
+
+    // keep showing the last frame that loaded rather than a broken image
+    if (
+      this.lastLoadedSrc &&
+      this.imgController.current.src != this.lastLoadedSrc
+    ) {
+      this.imgController.current.src = this.lastLoadedSrc;
+      this.loadingFrame = undefined;
+      return;
+    }
+
+    this.seeking = false;
   }
 }
