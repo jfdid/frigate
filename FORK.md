@@ -362,6 +362,9 @@ makes a frame every second.
     time passes the start of the current one (no slack before the hour while reversing). A drag
     keeps 60s of slack, which in reverse froze the preview at every hour
     boundary for up to 60s of footage.
+  - A tap on the timeline while reversing moves reverse there and keeps
+    going. The loop remembers the last time it set, and takes any other
+    `currentTime` as the new position, rather than stepping on from its own.
 - **Ending reverse:**
   - From the shuttle: seeks with `manuallySetCurrentTime`, paused or playing, after the player has left scrubbing mode.
   - Grabbing the timeline handle hands over to the drag.
@@ -546,7 +549,7 @@ docker logs $C 2>&1 | grep -c "Failed to retrieve many frames"
 | `specs/recording-scrub-preview.spec.ts` | Preview follows a held handle, also after the edge grows; a tick doesn't drop a held handle; newest frame fallback; preview catches up when the handle stops; the edge keeps growing after release; a frame that fails to load (404) doesn't freeze the preview. Desktop and mobile |
 | `specs/camera-view.spec.ts` | A dashboard tile and a `/#camera` link open the Camera view live (handle reads Live, stream plays); Back returns to the dashboard; Controls opens the classic page; Desktop and mobile |
 | `specs/recording-live-handoff.spec.ts` | Live mode: releasing at the top plays live in the view (loading notice, then playing, unmuted, URL unchanged, stream connected while still held); releasing lower stays; leaving the zone cancels; dragging down leaves live; a press without a drag stays live; a timeline tap leaves live; the scroll wheel zooms the live stream. Desktop and mobile, plus a real touch drag through Chromium's DevTools protocol and the live edge marker position |
-| `specs/recording-live-edge-playback.spec.ts` | Real HLS playback through hls.js: playback that runs into the newest footage carries on live; a paused player stays paused; playback continues from the playhead across a tick; the Go live button, also from a historical view; the shuttle (speeds, pause, the speed menu, reverse, reverse from live, reverse through cached frames, a missing frame, an earlier hour's mp4 and an hour boundary). Desktop and mobile |
+| `specs/recording-live-edge-playback.spec.ts` | Real HLS playback through hls.js: playback that runs into the newest footage carries on live; a paused player stays paused; playback continues from the playhead across a tick; the Go live button, also from a historical view; the shuttle (speeds, pause, the speed menu, reverse, a timeline tap while reversing, reverse from live, reverse through cached frames, a missing frame, an earlier hour's mp4 and an hour boundary). Desktop and mobile |
 | `helpers/live-stream-mocker.ts` | Fake go2rtc MSE socket that streams `fixtures/media/live-3s.mp4` (3s 320x180 H.264 baseline, fragmented, codecs `avc1.42C01E`), so a live player really plays. Media goes out on `release()`; the clip is short, so release it once the player should be showing. Use with `LIVE_STREAM_CONFIG`, which restreams front_door through go2rtc |
 | `fixtures/media/recording-2s.mpegts` | 48 KB, 2s, 320x180 H.264 MPEG-TS segment used by the playback spec. The mock serves a playlist and coverage that grow with the requested window, repeating this segment with `EXT-X-DISCONTINUITY` |
 | `fixtures/media/preview-600s.mp4` | 62 KB, 600s, 1 fps 320x180 H.264 with a keyframe every 40 frames, like the preview writer's hourly mp4. Served with byte ranges |

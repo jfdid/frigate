@@ -79,6 +79,9 @@ export function useShuttle({
   const [reverseSpeed, setReverseSpeed] = useState(0);
   const reversing = reverseSpeed > 0;
   const reversePosRef = useRef(currentTime);
+  // the last time reverse put on the view. Anything else (a tap on the
+  // timeline) moves reverse there instead of being stepped over
+  const reverseCommittedRef = useRef(currentTime);
   // set when reverse ends by a shuttle change: whether to play from there
   const resumeAfterReverseRef = useRef<boolean | undefined>(undefined);
 
@@ -133,6 +136,11 @@ export function useShuttle({
       const elapsed = last === undefined ? 0 : (now - last) / 1000;
       last = now;
 
+      if (currentTimeRef.current != reverseCommittedRef.current) {
+        reversePosRef.current = currentTimeRef.current;
+        reverseCommittedRef.current = currentTimeRef.current;
+      }
+
       const pos = Math.max(
         earliestTimeRef.current,
         reversePosRef.current - elapsed * reverseSpeed,
@@ -140,6 +148,7 @@ export function useShuttle({
       reversePosRef.current = pos;
 
       if (pos <= earliestTimeRef.current) {
+        reverseCommittedRef.current = pos;
         setCurrentTime(pos);
         resumeAfterReverseRef.current = false;
         setReverseSpeed(0);
@@ -148,6 +157,7 @@ export function useShuttle({
 
       if (now - lastCommit >= REVERSE_COMMIT_MS) {
         lastCommit = now;
+        reverseCommittedRef.current = pos;
         setCurrentTime(pos);
       }
 
@@ -193,6 +203,7 @@ export function useShuttle({
 
         if (!reversing) {
           reversePosRef.current = currentTimeRef.current;
+          reverseCommittedRef.current = currentTimeRef.current;
         }
 
         setReverseSpeed(-rate);

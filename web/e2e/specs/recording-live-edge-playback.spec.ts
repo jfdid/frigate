@@ -482,6 +482,52 @@ for (const mobile of [false, true]) {
       await expect.poll(() => playbackRate(frigateApp)).toBe(1);
     });
 
+    test("a tap on the timeline while reversing moves there and keeps reversing", async ({
+      frigateApp,
+    }) => {
+      const page = frigateApp.page;
+      await openAtLiveEdge(frigateApp, 120);
+      await waitForPlayback(frigateApp);
+      const start = Math.floor(NOW.getTime() / 1000) - 120;
+
+      // 1x, pause, then reverse at 1x
+      await moveShuttle(frigateApp, -2);
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "-1");
+      await page.clock.runFor(1000);
+
+      // the segment closest to five minutes before the handle
+      const target = await page.evaluate((time) => {
+        const ids = Array.from(
+          document.querySelectorAll<HTMLElement>(".segment[data-segment-id]"),
+        ).map((el) => Number(el.dataset.segmentId));
+        return ids.reduce((best, id) =>
+          Math.abs(id - time) < Math.abs(best - time) ? id : best,
+        );
+      }, start - 300);
+      const segment = page.locator(`.segment[data-segment-id="${target}"]`);
+      await segment.click({ force: true });
+      const targetOffset = await segment.evaluate((el) => {
+        const track = el.closest(".overflow-y-auto");
+        return track
+          ? el.getBoundingClientRect().top -
+              track.getBoundingClientRect().top +
+              track.scrollTop
+          : 0;
+      });
+      const segmentHeight = await segment.evaluate(
+        (el) => el.getBoundingClientRect().height,
+      );
+
+      // reverse used to put the handle straight back where it was
+      await page.clock.runFor(2000);
+      await expect(shuttle(frigateApp)).toHaveAttribute("data-rate", "-1");
+      await expect
+        .poll(async () =>
+          Math.abs((await handleOffset(frigateApp)) - targetOffset),
+        )
+        .toBeLessThan(segmentHeight);
+    });
+
     test("reverse from live leaves live and rewinds", async ({
       frigateApp,
     }) => {
