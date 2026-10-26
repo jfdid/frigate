@@ -182,9 +182,11 @@ the in-view live mode below.
 - Or press **Go live** in the recording player's controls (commit 14):
   `VideoControls` takes an optional `onGoLive` (passed through
   `DynamicVideoPlayer` and `HlsVideoPlayer`) and shows a red "Go live"
-  button next to fullscreen (`data-testid="go-live-button"`). The view passes
-  it only when `liveAllowed`. The controls are hidden while the recording
-  player is loading, like all its controls.
+  button next to fullscreen (`data-testid="go-live-button"`). The view's
+  `goLiveButton` goes live in place when `liveAllowed`, else opens
+  `/#camera`, and is left out while exporting or picking a debug replay
+  range. The controls are hidden while the recording player is loading,
+  like all its controls.
 - Live starts unmuted (`LivePlayer` `playAudio`). The release is a user
   gesture, and the auto path relies on the page's earlier interaction; if
   the browser still refuses sound, the MSE player falls back to muted.
@@ -208,8 +210,10 @@ the in-view live mode below.
   it re-pins on every live edge tick. `onTimestampUpdate` ignores the
   covered recording player while `isLiveRef` is set.
 - Controls (commit 14): hovering (desktop) or tapping (touch, hidden again
-  after 4s) shows a small pill at the bottom with a fullscreen button
-  (`live-controls`, `live-fullscreen`). Fullscreen uses the view's
+  after 4s) shows a small pill at the bottom with mute and volume
+  (`live-mute`; not for jsmpeg, which has no audio) and fullscreen, where
+  the browser supports it (`live-controls`, `live-fullscreen`). Mute and
+  volume feed `LivePlayer`'s `playAudio` and `volume`. Fullscreen uses the view's
   `useFullscreen(mainLayoutRef)`, the same element as the recording
   player's button, so the timeline stays usable. A drag that pans a zoomed
   stream doesn't toggle the pill (`onPanning` sets `pannedRef`).
@@ -316,7 +320,8 @@ and doesn't name it.
   redirecting. The Camera view's header has a **Controls** button
   (`LuSlidersHorizontal`, `views/events` `cameraView.controls`) that opens
   it. Its Back returns to the Camera view.
-- The Camera view's **Live** button goes live in place when the view
+- The header's upstream **Live** button is removed (commit 14). The player
+  controls' **Go live** button does its job: live in place when the view
   follows the live edge; in a historical view it opens `/#camera`, i.e. a
   fresh Camera view at the live edge.
 - Upstream e2e specs that open the classic page by URL now use

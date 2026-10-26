@@ -79,8 +79,6 @@ async function setUp(frigateApp: FrigateApp) {
 
 const activeLivePlayer = (page: Page) =>
   page.locator('[data-testid="recording-live-player"][data-active="true"]');
-const handle = (page: Page) =>
-  page.locator('[role="scrollbar"] .rounded-full').first();
 
 async function expectLiveCameraView(page: Page) {
   await expect(page).toHaveURL(/\/review/);
@@ -159,29 +157,6 @@ for (const mobile of [false, true]) {
       await expect(
         page.getByRole("button", { name: "Show historical footage" }),
       ).toBeVisible({ timeout: 10_000 });
-    });
-
-    test("the Live button goes back to live in place", async ({
-      frigateApp,
-    }) => {
-      const page = frigateApp.page;
-      await setUp(frigateApp);
-      await frigateApp.goto("/#front_door");
-      await expectLiveCameraView(page);
-
-      // tap the timeline lower down to leave live for recordings
-      const box = await handle(page).boundingBox();
-      if (!box) {
-        throw new Error("handlebar has no bounding box");
-      }
-      await page.mouse.click(box.x + box.width / 2, box.y + 150);
-      await expect(activeLivePlayer(page)).toHaveCount(0);
-
-      await page
-        .getByRole("button", { name: "Go to the main camera live view" })
-        .click();
-      await expect(activeLivePlayer(page)).toBeVisible();
-      await expect(page).toHaveURL(/\/review/);
     });
   });
 }

@@ -55,7 +55,6 @@ import MobileTimelineDrawer from "@/components/overlay/MobileTimelineDrawer";
 import MobileReviewSettingsDrawer from "@/components/overlay/MobileReviewSettingsDrawer";
 import Logo from "@/components/Logo";
 import { Skeleton } from "@/components/ui/skeleton";
-import { FaVideo } from "react-icons/fa";
 import { LuSlidersHorizontal } from "react-icons/lu";
 import { VideoResolutionType } from "@/types/live";
 import {
@@ -433,6 +432,24 @@ export function RecordingView({
     isLiveRef.current = false;
     setIsLive(false);
   }, []);
+
+  // the player controls' Go live button: live in place at the live edge;
+  // a historical view opens a fresh Camera view at the live edge instead.
+  // Not while exporting or picking a debug replay range
+  const goLiveButton = useMemo(() => {
+    if (exportRange != undefined || debugReplayRange != undefined) {
+      return undefined;
+    }
+
+    return liveAllowed ? goLive : () => navigate(`/#${mainCamera}`);
+  }, [
+    exportRange,
+    debugReplayRange,
+    liveAllowed,
+    goLive,
+    navigate,
+    mainCamera,
+  ]);
 
   // keep the handle at the top of the track as the live edge grows
   useEffect(() => {
@@ -931,27 +948,6 @@ export function RecordingView({
             </Button>
             <Button
               className="flex items-center gap-2.5 rounded-lg"
-              aria-label="Go to the main camera live view"
-              size="sm"
-              onClick={() => {
-                // live in place at the live edge; a historical view opens
-                // a fresh Camera view at the live edge instead
-                if (liveAllowed) {
-                  goLive();
-                } else {
-                  navigate(`/#${mainCamera}`);
-                }
-              }}
-            >
-              <FaVideo className="size-5 text-secondary-foreground" />
-              {isDesktop && (
-                <div className="text-primary">
-                  {t("menu.live.title", { ns: "common" })}
-                </div>
-              )}
-            </Button>
-            <Button
-              className="flex items-center gap-2.5 rounded-lg"
               aria-label={t("cameraView.controlsAria")}
               size="sm"
               onClick={() => {
@@ -1262,7 +1258,7 @@ export function RecordingView({
                   supportsFullscreen={supportsFullScreen}
                   setFullResolution={setFullResolution}
                   toggleFullscreen={toggleFullscreen}
-                  onGoLive={liveAllowed ? goLive : undefined}
+                  onGoLive={goLiveButton}
                   containerRef={mainLayoutRef}
                   quality={playerQuality}
                   onAutoQualityChange={onAutoQualityChange}

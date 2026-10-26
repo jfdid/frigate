@@ -97,7 +97,9 @@
     "goLive": "Go live",
     "live": "LIVE",
     "loadingStream": "Loading live stream…",
-    "handlebar": "Live"
+    "handlebar": "Live",
+    "mute": "Mute",
+    "unmute": "Unmute"
   },
   "cameraView": {
     "controls": "Controls",

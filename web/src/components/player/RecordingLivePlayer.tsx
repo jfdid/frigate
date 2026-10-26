@@ -4,6 +4,13 @@ import { useTranslation } from "react-i18next";
 import { TransformComponent, TransformWrapper } from "react-zoom-pan-pinch";
 import { isDesktop } from "react-device-detect";
 import { FaCompress, FaExpand } from "react-icons/fa";
+import {
+  MdVolumeDown,
+  MdVolumeMute,
+  MdVolumeOff,
+  MdVolumeUp,
+} from "react-icons/md";
+import { VolumeSlider } from "../ui/slider";
 import LivePlayer from "./LivePlayer";
 import ActivityIndicator from "../indicators/activity-indicator";
 import { FrigateConfig } from "@/types/frigateConfig";
@@ -141,7 +148,27 @@ export default function RecordingLivePlayer({
 
   useEffect(() => () => clearTimeout(hideControlsTimeoutRef.current), []);
 
-  const hasControls = supportsFullscreen && toggleFullscreen != undefined;
+  const canFullscreen = supportsFullscreen && toggleFullscreen != undefined;
+
+  // sound: on by default, as live starts unmuted from a user gesture.
+  // jsmpeg streams carry no audio
+  const hasAudio = preferredLiveMode != "jsmpeg";
+  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
+
+  const VolumeIcon = useMemo(() => {
+    if (muted || volume == 0) {
+      return MdVolumeOff;
+    } else if (volume <= 0.33) {
+      return MdVolumeMute;
+    } else if (volume <= 0.67) {
+      return MdVolumeDown;
+    }
+
+    return MdVolumeUp;
+  }, [muted, volume]);
+
+  const hasControls = canFullscreen || hasAudio;
 
   if (!cameraConfig || !streamName) {
     return null;
@@ -208,7 +235,8 @@ export default function RecordingLivePlayer({
             showStillWithoutActivity={false}
             useWebGL={false}
             playInBackground={false}
-            playAudio={active}
+            playAudio={active && !muted}
+            volume={volume}
             onError={onError}
             onLiveAspectChange={onLiveAspectChange}
           />
@@ -232,25 +260,54 @@ export default function RecordingLivePlayer({
           data-testid="live-controls"
           onClick={(e) => e.stopPropagation()}
         >
-          <div
-            className="cursor-pointer"
-            role="button"
-            aria-label={
-              fullscreen
-                ? t("button.exitFullscreen", { ns: "common" })
-                : t("button.fullscreen", { ns: "common" })
-            }
-            data-testid="live-fullscreen"
-            onClick={() => {
-              toggleFullscreen?.();
+          {hasAudio && (
+            <div className="flex items-center gap-2">
+              <VolumeIcon
+                className="size-5 cursor-pointer"
+                role="button"
+                aria-label={muted ? t("liveEdge.unmute") : t("liveEdge.mute")}
+                data-testid="live-mute"
+                onClick={() => {
+                  setMuted(!muted);
 
-              if (!isDesktop) {
-                showControls(true, true);
+                  if (!isDesktop) {
+                    showControls(true, true);
+                  }
+                }}
+              />
+              {!muted && (
+                <VolumeSlider
+                  className="w-20"
+                  value={[volume]}
+                  min={0}
+                  max={1}
+                  step={0.02}
+                  onValueChange={(value) => setVolume(value[0])}
+                />
+              )}
+            </div>
+          )}
+          {canFullscreen && (
+            <div
+              className="cursor-pointer"
+              role="button"
+              aria-label={
+                fullscreen
+                  ? t("button.exitFullscreen", { ns: "common" })
+                  : t("button.fullscreen", { ns: "common" })
               }
-            }}
-          >
-            {fullscreen ? <FaCompress /> : <FaExpand />}
-          </div>
+              data-testid="live-fullscreen"
+              onClick={() => {
+                toggleFullscreen?.();
+
+                if (!isDesktop) {
+                  showControls(true, true);
+                }
+              }}
+            >
+              {fullscreen ? <FaCompress /> : <FaExpand />}
+            </div>
+          )}
         </div>
       )}
     </div>

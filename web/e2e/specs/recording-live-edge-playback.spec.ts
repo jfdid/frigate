@@ -322,6 +322,27 @@ for (const mobile of [false, true]) {
       await expect(activeLivePlayer(frigateApp)).toBeVisible();
       await expect(page.getByTestId("handlebar-label")).toHaveText("Live");
     });
+
+    test("Go live in a historical view opens the camera live", async ({
+      frigateApp,
+    }) => {
+      const page = frigateApp.page;
+      // a day back: the view doesn't follow the live edge
+      await openAtLiveEdge(frigateApp, 24 * 3600);
+      await waitForPlayback(frigateApp);
+
+      if (!mobile) {
+        await page.locator("video").first().hover();
+      }
+
+      await page.getByTestId("go-live-button").click();
+
+      // a fresh Camera view at the live edge, already live
+      await expect(activeLivePlayer(frigateApp)).toBeVisible({
+        timeout: 15_000,
+      });
+      await expect(page).toHaveURL(/\/review/);
+    });
   });
 }
 

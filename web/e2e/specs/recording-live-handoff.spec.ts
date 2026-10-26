@@ -281,6 +281,16 @@ for (const mobile of [false, true]) {
       }
 
       await expect(controls).toBeVisible();
+
+      // live starts with sound; the speaker mutes it
+      const liveVideoMuted = () =>
+        activeLivePlayer(page)
+          .locator("video")
+          .evaluate((video: HTMLVideoElement) => video.muted);
+      await expect.poll(liveVideoMuted).toBe(false);
+      await page.getByTestId("live-mute").click();
+      await expect.poll(liveVideoMuted).toBe(true);
+
       await page.getByTestId("live-fullscreen").click();
       await expect
         .poll(() => page.evaluate(() => document.fullscreenElement != null))
