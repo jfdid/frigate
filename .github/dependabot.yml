@@ -55,6 +55,9 @@ updates:
       # Needs Python 3.12 and numpy 2
       - dependency-name: "librosa"
         versions: [">=1.0"]
+      # pandas 3.1 requires numpy 2
+      - dependency-name: "pandas"
+        versions: [">=3.1"]
       # Needs Python 3.12
       - dependency-name: "scipy"
         versions: [">=1.18"]
@@ -122,18 +125,17 @@ updates:
       # Intermittent failure in the UI settings import spec, cause not found
       - dependency-name: "zod"
         update-types: ["version-update:semver-major"]
-      # Needs an on-device pinch test before moving
+      # Every later version clamps the pan when the player hides or drops
+      # pinch gestures near the edges, 4.2.0 included
       - dependency-name: "react-zoom-pan-pinch"
-        update-types: ["version-update:semver-major"]
-      # Build fails until monaco-worker-manager releases its PR 4
+        versions: [">3.4.4"]
+      # 0.54 pins a vulnerable dompurify; 0.55+ breaks YAML validation until
+      # monaco-worker-manager releases its PR 4
       - dependency-name: "monaco-editor"
-        versions: [">=0.55.0"]
+        versions: [">=0.54.0"]
       # Later versions need Node 22 and extract false keys
       - dependency-name: "i18next-cli"
         versions: [">1.5.11"]
-      # 6.11.0 refills the saved model in the GenAI settings form
-      - dependency-name: "@rjsf/*"
-        versions: ["6.11.0"]
 
   - package-ecosystem: "npm"
     directory: "/docs"

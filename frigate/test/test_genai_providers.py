@@ -145,11 +145,71 @@ def _openai_chunk(content=None, tool_calls=None, finish_reason=None, usage=None)
     return SimpleNamespace(choices=[choice], usage=usage)
 
 
+class _FakeAsyncOpenAIStream:
+    """Mimics openai.AsyncStream: async iterable and async context manager.
+
+    With ``stall_after`` set, the stream stops producing after that many
+    chunks, like a model that stops sending tokens, and sets ``stalled``.
+    """
+
+    def __init__(self, chunks, stall_after=None):
+        self._chunks = chunks
+        self._stall_after = stall_after
+        self.stalled = asyncio.Event()
+        self.close = AsyncMock()
+
+    async def __aiter__(self):
+        for i, chunk in enumerate(self._chunks):
+            if i == self._stall_after:
+                self.stalled.set()
+                await asyncio.Event().wait()
+            yield chunk
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.close()
+
+
+class _FakeAsyncOpenAI:
+    """Mimics openai.AsyncOpenAI: async context manager with a completions API."""
+
+    def __init__(self, create):
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+        self.close = AsyncMock()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.close()
+
+
 class TestOpenAIProvider(unittest.TestCase):
     def _client(self):
         return _make_client(
             "openai", model="gpt-4o", api_key="k", base_url="http://localhost:9999/v1"
         )
+
+    def _streaming_client(self, create):
+        """Build a client whose async completions call is ``create``."""
+        client = self._client()
+        async_client = _FakeAsyncOpenAI(create)
+        client._init_async_provider = MagicMock(return_value=async_client)
+        return client, async_client
+
+    def test_async_client_uses_configured_options(self):
+        from openai import AsyncOpenAI
+
+        client = self._client()
+        async_client = client._init_async_provider()
+        try:
+            self.assertIsInstance(async_client, AsyncOpenAI)
+            self.assertEqual(async_client.base_url, client.provider.base_url)
+            self.assertEqual(async_client.api_key, "k")
+        finally:
+            asyncio.run(async_client.close())
 
     def test_stream_tool_call_arguments_are_dict(self):
         # Arguments arrive split across chunks, as the real API streams them.
@@ -162,8 +222,9 @@ class TestOpenAIProvider(unittest.TestCase):
             _openai_chunk(tool_calls=[_openai_tc(0, arguments=' "person"}')]),
             _openai_chunk(finish_reason="tool_calls"),
         ]
-        client = self._client()
-        client.provider.chat.completions.create = MagicMock(return_value=iter(chunks))
+        client, _ = self._streaming_client(
+            AsyncMock(return_value=_FakeAsyncOpenAIStream(chunks))
+        )
 
         final = _final_message(_collect(client, SIMPLE_MESSAGES))
         self.assertEqual(final["finish_reason"], "tool_calls")
@@ -177,8 +238,9 @@ class TestOpenAIProvider(unittest.TestCase):
             _openai_chunk(content="lo"),
             _openai_chunk(finish_reason="stop"),
         ]
-        client = self._client()
-        client.provider.chat.completions.create = MagicMock(return_value=iter(chunks))
+        client, _ = self._streaming_client(
+            AsyncMock(return_value=_FakeAsyncOpenAIStream(chunks))
+        )
 
         events = _collect(client, SIMPLE_MESSAGES)
         deltas = [v for (k, v) in events if k == "content_delta"]
@@ -186,13 +248,83 @@ class TestOpenAIProvider(unittest.TestCase):
         self.assertEqual(_final_message(events)["content"], "hello")
 
     def test_multimodal_message_does_not_crash(self):
-        client = self._client()
-        client.provider.chat.completions.create = MagicMock(
-            return_value=iter([_openai_chunk(content="ok", finish_reason="stop")])
+        client, _ = self._streaming_client(
+            AsyncMock(
+                return_value=_FakeAsyncOpenAIStream(
+                    [_openai_chunk(content="ok", finish_reason="stop")]
+                )
+            )
         )
         # Passing the OpenAI-native multimodal list through must not raise.
         final = _final_message(_collect(client, MULTIMODAL_MESSAGES))
         self.assertEqual(final["content"], "ok")
+
+    def test_stream_uses_async_client_and_closes_it(self):
+        # The blocking sync client must never be used on the event loop.
+        stream = _FakeAsyncOpenAIStream(
+            [_openai_chunk(content="ok", finish_reason="stop")]
+        )
+        create = AsyncMock(return_value=stream)
+        client, async_client = self._streaming_client(create)
+        client.provider.chat.completions.create = MagicMock()
+
+        final = _final_message(_collect(client, SIMPLE_MESSAGES))
+
+        self.assertEqual(final["content"], "ok")
+        self.assertTrue(create.await_args.kwargs["stream"])
+        client.provider.chat.completions.create.assert_not_called()
+        stream.close.assert_awaited_once()
+        async_client.close.assert_awaited_once()
+
+    def test_client_closed_when_caller_leaves_while_opening(self):
+        # Cancelling before the response arrives must still close the client.
+        async def _run():
+            opening = asyncio.Event()
+
+            async def hang(**kwargs):
+                opening.set()
+                await asyncio.Event().wait()
+
+            client, async_client = self._streaming_client(hang)
+            gen = client.chat_with_tools_stream(
+                messages=SIMPLE_MESSAGES, tools=None, tool_choice="auto"
+            )
+            task = asyncio.create_task(gen.__anext__())
+            await opening.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=1)
+            return async_client
+
+        async_client = asyncio.run(_run())
+        async_client.close.assert_awaited_once()
+
+    def test_stream_closed_when_caller_leaves_mid_stream(self):
+        # Cancelling while waiting on a stalled model must close the stream
+        # right away instead of waiting for the next chunk.
+        async def _run():
+            stream = _FakeAsyncOpenAIStream(
+                [_openai_chunk(content="a"), _openai_chunk(finish_reason="stop")],
+                stall_after=1,
+            )
+            client, async_client = self._streaming_client(
+                AsyncMock(return_value=stream)
+            )
+            gen = client.chat_with_tools_stream(
+                messages=SIMPLE_MESSAGES, tools=None, tool_choice="auto"
+            )
+            first = await gen.__anext__()
+            task = asyncio.create_task(gen.__anext__())
+            await stream.stalled.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=1)
+            return first, stream, async_client
+
+        first, stream, async_client = asyncio.run(_run())
+        self.assertEqual(first, ("content_delta", "a"))
+        stream.close.assert_awaited_once()
+        async_client.close.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +429,56 @@ class TestGeminiProvider(unittest.TestCase):
         )
         final = _final_message(_collect(client, MULTIMODAL_MESSAGES))
         self.assertEqual(final["content"], "ok")
+
+
+class TestGeminiImageTokens(unittest.TestCase):
+    def _client(self, count_tokens):
+        client = _make_client("gemini", model="gemini-3-flash", api_key="k")
+        client.provider = SimpleNamespace(
+            models=SimpleNamespace(count_tokens=count_tokens)
+        )
+        return client
+
+    def test_measures_image_cost_and_caches_per_size(self):
+        count_tokens = MagicMock(
+            side_effect=lambda model, contents, config: SimpleNamespace(
+                total_tokens=2 if len(contents) == 1 else 1102
+            )
+        )
+        client = self._client(count_tokens)
+
+        self.assertEqual(client.estimate_image_tokens(320, 180), 1100)
+        self.assertEqual(client.estimate_image_tokens(320, 180), 1100)
+        self.assertEqual(count_tokens.call_count, 2)
+
+        image = count_tokens.call_args.kwargs["contents"][1]
+        self.assertEqual(image.inline_data.mime_type, "image/jpeg")
+        self.assertEqual(count_tokens.call_args.kwargs["model"], "gemini-3-flash")
+        http_options = count_tokens.call_args.kwargs["config"].http_options
+        self.assertEqual(http_options.timeout, 5000)
+        self.assertEqual(http_options.retry_options.attempts, 1)
+
+        client.estimate_image_tokens(640, 360)
+        self.assertEqual(count_tokens.call_count, 4)
+
+    def test_failure_falls_back_to_heuristic_and_waits_before_retrying(self):
+        count_tokens = MagicMock(side_effect=RuntimeError("offline"))
+        client = self._client(count_tokens)
+
+        with patch("frigate.genai.plugins.gemini.time.monotonic", return_value=1000):
+            self.assertEqual(client.estimate_image_tokens(320, 180), 320 * 180 / 1250)
+            self.assertEqual(client.estimate_image_tokens(640, 360), 640 * 360 / 1250)
+        self.assertEqual(count_tokens.call_count, 1)
+
+        with patch("frigate.genai.plugins.gemini.time.monotonic", return_value=1300):
+            client.estimate_image_tokens(320, 180)
+        self.assertEqual(count_tokens.call_count, 2)
+
+    def test_missing_total_falls_back_to_heuristic(self):
+        client = self._client(
+            MagicMock(return_value=SimpleNamespace(total_tokens=None))
+        )
+        self.assertEqual(client.estimate_image_tokens(320, 180), 320 * 180 / 1250)
 
 
 # ---------------------------------------------------------------------------
@@ -940,6 +1122,17 @@ class TestAzureOpenAITranscribe(unittest.TestCase):
         self.assertIsInstance(client.provider, AzureOpenAI)
         self.assertTrue(client.supports_transcription)
 
+    def test_streaming_routes_through_async_azure_client(self):
+        from openai import AsyncAzureOpenAI
+
+        client = self._client()
+        async_client = client._init_async_provider()
+        try:
+            self.assertIsInstance(async_client, AsyncAzureOpenAI)
+            self.assertEqual(async_client.base_url, client.provider.base_url)
+        finally:
+            asyncio.run(async_client.close())
+
     def test_transcribe_inherited(self):
         client = self._client()
         create = MagicMock(return_value="azure text")
@@ -1091,6 +1284,154 @@ class TestImageTokenEstimate(unittest.TestCase):
 
         self.assertEqual(client.estimate_image_tokens(250, 100), 20)
         self.assertEqual(client._image_token_cache, {})
+
+
+class TestGeminiEmbeddings(unittest.TestCase):
+    """gemini-embedding-2 via embed_content. No network, no real images."""
+
+    @staticmethod
+    def _webp_bytes():
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (8, 8), (10, 20, 30)).save(buf, format="WEBP")
+        return buf.getvalue()
+
+    @staticmethod
+    def _vector(value: float):
+        return SimpleNamespace(embeddings=[SimpleNamespace(values=[value] * 768)])
+
+    def _client(self, model="models/gemini-embedding-2"):
+        client = _make_client("gemini", model=model, api_key="k")
+        client.provider = MagicMock()
+        return client
+
+    def test_supports_embeddings_checks_supported_actions(self):
+        models = [
+            SimpleNamespace(
+                name="models/gemini-2.5-flash",
+                supported_actions=["generateContent"],
+            ),
+            SimpleNamespace(
+                name="models/gemini-embedding-2",
+                supported_actions=["embedContent", "countTokens"],
+            ),
+        ]
+
+        client = self._client(model="models/gemini-embedding-2")
+        client.provider.models.list.return_value = models
+        self.assertTrue(client.supports_embeddings)
+        self.assertEqual(
+            client.list_model_capabilities(),
+            {
+                "models/gemini-2.5-flash": {"supports_embeddings": False},
+                "gemini-2.5-flash": {"supports_embeddings": False},
+                "models/gemini-embedding-2": {"supports_embeddings": True},
+                "gemini-embedding-2": {"supports_embeddings": True},
+            },
+        )
+        client.provider.models.list.assert_called_once()
+
+        unprefixed = self._client(model="gemini-embedding-2")
+        unprefixed.provider.models.list.return_value = models
+        self.assertTrue(unprefixed.supports_embeddings)
+
+        chat_client = self._client(model="models/gemini-2.5-flash")
+        chat_client.provider.models.list.return_value = models
+        self.assertFalse(chat_client.supports_embeddings)
+
+    def test_capability_lookup_failure_is_not_cached(self):
+        client = self._client()
+        client.provider.models.list.side_effect = [
+            RuntimeError("offline"),
+            [
+                SimpleNamespace(
+                    name="models/gemini-embedding-2",
+                    supported_actions=["embedContent"],
+                )
+            ],
+        ]
+
+        self.assertFalse(client.supports_embeddings)
+        self.assertTrue(client.supports_embeddings)
+
+    def test_one_request_per_text_and_image(self):
+        client = self._client()
+        client.provider.models.embed_content.side_effect = [
+            self._vector(0.1),
+            self._vector(0.2),
+        ]
+
+        result = client.embed(texts=["a person walking"], images=[self._webp_bytes()])
+
+        calls = client.provider.models.embed_content.call_args_list
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0].kwargs["model"], "gemini-embedding-2")
+        self.assertEqual(
+            calls[0].kwargs["contents"],
+            "task: search result | query: a person walking",
+        )
+        self.assertEqual(calls[0].kwargs["config"].output_dimensionality, 768)
+        parts = calls[1].kwargs["contents"]
+        self.assertEqual(len(parts), 1)
+        self.assertEqual(parts[0].inline_data.mime_type, "image/jpeg")
+        self.assertTrue(parts[0].inline_data.data.startswith(b"\xff\xd8\xff"))
+        self.assertEqual(calls[1].kwargs["model"], "gemini-embedding-2")
+        self.assertEqual(len(result), 2)
+        self.assertEqual(len(result[0]), 768)
+        self.assertEqual(result[0].dtype.name, "float32")
+        self.assertAlmostEqual(float(result[1][0]), 0.2, places=5)
+
+    def test_prepared_task_prefix_is_kept(self):
+        client = self._client(model="gemini-embedding-2")
+        client.provider.models.embed_content.return_value = self._vector(0.3)
+        prepared = "task: search result | query: already prepared"
+
+        client.embed(texts=[prepared])
+
+        contents = client.provider.models.embed_content.call_args.kwargs["contents"]
+        self.assertEqual(contents, prepared)
+        self.assertEqual(
+            client.provider.models.embed_content.call_args.kwargs["model"],
+            "gemini-embedding-2",
+        )
+
+    def test_empty_input_makes_no_request(self):
+        client = self._client()
+
+        self.assertEqual(client.embed(), [])
+        client.provider.models.embed_content.assert_not_called()
+
+    def test_api_error_raises_value_error(self):
+        client = self._client()
+        client.provider.models.embed_content.side_effect = RuntimeError("rejected")
+
+        with self.assertRaises(ValueError) as caught:
+            client.embed(texts=["hello"])
+
+        self.assertEqual(str(caught.exception), "Gemini embeddings request failed")
+
+    def test_bad_image_is_not_sent(self):
+        client = self._client()
+
+        with self.assertRaises(ValueError) as caught:
+            client.embed(images=[b"this is not an image"])
+
+        self.assertEqual(
+            str(caught.exception), "thumbnail could not be converted to JPEG"
+        )
+        client.provider.models.embed_content.assert_not_called()
+
+    def test_missing_vector_raises(self):
+        client = self._client()
+        client.provider.models.embed_content.return_value = SimpleNamespace(
+            embeddings=[]
+        )
+
+        with self.assertRaises(ValueError):
+            client.embed(texts=["hello"])
 
 
 class TestBaseClientTranscribe(unittest.TestCase):

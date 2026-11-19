@@ -37,6 +37,7 @@ from frigate.const import STREAM_TYPE_MAIN
 from frigate.embeddings import EmbeddingsContext
 from frigate.models import Recordings, ReviewSegment, UserReviewStatus
 from frigate.review.types import SeverityEnum
+from frigate.util.recording_coverage import recording_overlap
 from frigate.util.time import get_dst_transitions
 
 logger = logging.getLogger(__name__)
@@ -81,11 +82,18 @@ async def review(
     reviewed = params.reviewed
     limit = params.limit
     severity = params.severity
-    before = params.before or datetime.datetime.now().timestamp()
-    after = (
-        params.after
-        or (datetime.datetime.now() - datetime.timedelta(hours=24)).timestamp()
+    before = (
+        params.before
+        if params.before is not None
+        else datetime.datetime.now().timestamp()
     )
+
+    if params.after is not None:
+        after = params.after
+    elif params.before is not None:
+        after = 0
+    else:
+        after = (datetime.datetime.now() - datetime.timedelta(hours=24)).timestamp()
 
     clauses = [
         (ReviewSegment.start_time < before)
@@ -162,8 +170,7 @@ async def review(
 
     # Apply ordering and limit
     review_query = (
-        review_query.order_by(ReviewSegment.severity.asc())
-        .order_by(ReviewSegment.start_time.desc())
+        review_query.order_by(ReviewSegment.start_time.desc())
         .limit(limit)
         .dicts()
         .iterator()
@@ -585,14 +592,7 @@ def delete_reviews(body: ReviewModifyMultipleBody):
         camera_name = review["camera"]
         recordings = (
             Recordings.select(Recordings.id, Recordings.path)
-            .where(
-                Recordings.start_time.between(start_time, end_time)
-                | Recordings.end_time.between(start_time, end_time)
-                | (
-                    (start_time > Recordings.start_time)
-                    & (end_time < Recordings.end_time)
-                )
-            )
+            .where(recording_overlap(start_time, end_time))
             .where(Recordings.camera == camera_name)
             .dicts()
             .iterator()

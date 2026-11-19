@@ -34,9 +34,11 @@ from frigate.const import (
 from frigate.data_processing.types import PostProcessDataEnum
 from frigate.genai import GenAIClient
 from frigate.genai.manager import GenAIClientManager
-from frigate.models import Recordings, ReviewSegment
+from frigate.models import Event, Recordings, ReviewSegment
+from frigate.output.preview import is_camera_preview_frame
 from frigate.util.builtin import EventsPerSecond, InferenceSpeed
 from frigate.util.image import get_image_from_recording
+from frigate.util.recording_coverage import recording_overlap
 
 from ..post.api import PostProcessorApi
 from ..types import DataProcessorMetrics
@@ -66,6 +68,9 @@ class ReviewDescriptionProcessor(PostProcessorApi):
         self.review_desc_speed = InferenceSpeed(self.metrics.review_desc_speed)
         self.review_desc_dps = EventsPerSecond()
         self.review_desc_dps.start()
+
+        # one review's ffmpeg extraction at a time, as on the maintainer loop
+        self._frame_extraction_lock = threading.Lock()
 
     def calculate_frame_count(
         self,
@@ -178,53 +183,72 @@ class ReviewDescriptionProcessor(PostProcessorApi):
             ):
                 return
 
-            image_source = camera_config.review.genai.image_source
-            frame_mode = camera_config.review.genai.frame_mode
+            threading.Thread(
+                target=self._describe_finished_review,
+                name=f"review_description_{id}",
+                daemon=True,
+                args=(
+                    camera_config,
+                    final_data,
+                    camera_config.review.genai.image_source,
+                ),
+            ).start()
 
-            if image_source == ImageSourceEnum.recordings:
-                buffer_extension = get_recording_buffer_extension(
-                    final_data["end_time"] - final_data["start_time"]
-                )
-                final_data["start_time"] -= buffer_extension
-                final_data["end_time"] += buffer_extension
+    def _describe_finished_review(
+        self,
+        camera_config: CameraConfig,
+        final_data: dict[str, Any],
+        image_source: ImageSourceEnum,
+        preview_fallback: bool = True,
+        named_objects: list[tuple[str, str]] | None = None,
+    ) -> None:
+        """Gather frames for a finished review item and start its description.
 
+        Runs off the maintainer loop since recording frames shell out to ffmpeg
+        once per frame.
+        """
+        camera = final_data["camera"]
+        id = final_data["id"]
+        genai_config = camera_config.review.genai
+        frames: list[tuple[bytes, float]] = []
+
+        if image_source == ImageSourceEnum.recordings:
+            buffer_extension = get_recording_buffer_extension(
+                final_data["end_time"] - final_data["start_time"]
+            )
+            with self._frame_extraction_lock:
                 frames = self.get_recording_frames(
                     camera,
-                    final_data["start_time"],
-                    final_data["end_time"],
+                    final_data["start_time"] - buffer_extension,
+                    final_data["end_time"] + buffer_extension,
                     height=480,  # Use 480p for good balance between quality and token usage
-                    frame_mode=frame_mode,
+                    frame_mode=genai_config.frame_mode,
                 )
 
-                if not frames:
-                    # Fallback to preview frames if no recordings available
-                    logger.warning(
-                        f"No recording frames found for {camera}, falling back to preview frames"
-                    )
-                    frames = self.get_preview_frames_as_bytes(
-                        camera,
-                        final_data["start_time"],
-                        final_data["end_time"],
-                        final_data["thumb_path"],
-                        id,
-                        camera_config.review.genai.debug_save_thumbnails,
-                        frame_mode,
-                    )
-                elif camera_config.review.genai.debug_save_thumbnails:
+            if frames:
+                if genai_config.debug_save_thumbnails:
                     self.save_debug_recording_frames(id, frames)
+            elif not preview_fallback:
+                logger.error("No recording frames are available for review item %s", id)
+                return
             else:
-                # Use preview frames
-                frames = self.get_preview_frames_as_bytes(
+                logger.warning(
+                    "No recording frames found for %s, falling back to preview frames",
                     camera,
-                    final_data["start_time"],
-                    final_data["end_time"],
-                    final_data["thumb_path"],
-                    id,
-                    camera_config.review.genai.debug_save_thumbnails,
-                    frame_mode,
                 )
 
-            self.start_analysis(camera_config, final_data, frames)
+        if not frames:
+            frames = self.get_preview_frames_as_bytes(
+                camera,
+                final_data["start_time"],
+                final_data["end_time"],
+                final_data["thumb_path"],
+                id,
+                genai_config.debug_save_thumbnails,
+                genai_config.frame_mode,
+            )
+
+        self.start_analysis(camera_config, final_data, frames, named_objects)
 
     def handle_request(self, topic: str, request_data: dict[str, Any]) -> str | None:
         if topic == EmbeddingsRequestEnum.regenerate_review_description.value:
@@ -418,33 +442,23 @@ class ReviewDescriptionProcessor(PostProcessorApi):
             logger.error("Review item %s has not ended yet", review_id)
             return
 
-        buffer_extension = get_recording_buffer_extension(
-            final_data["end_time"] - final_data["start_time"]
+        self._describe_finished_review(
+            camera_config,
+            final_data,
+            ImageSourceEnum.recordings,
+            preview_fallback=False,
+            named_objects=get_named_objects(
+                final_data["data"].get("detections") or [],
+                self.config.all_attributes,
+            ),
         )
-        frames = self.get_recording_frames(
-            str(review.camera),
-            final_data["start_time"] - buffer_extension,
-            final_data["end_time"] + buffer_extension,
-            height=480,
-            frame_mode=camera_config.review.genai.frame_mode,
-        )
-
-        if not frames:
-            logger.error(
-                "No recording frames are available for review item %s", review_id
-            )
-            return
-
-        if camera_config.review.genai.debug_save_thumbnails:
-            self.save_debug_recording_frames(review_id, frames)
-
-        self.start_analysis(camera_config, final_data, frames)
 
     def start_analysis(
         self,
         camera_config: CameraConfig,
         final_data: dict[str, Any],
         frames: list[tuple[bytes, float]],
+        named_objects: list[tuple[str, str]] | None = None,
     ) -> None:
         """Kick off description generation for a review item in the background."""
         thumbs = [frame for frame, _ in frames]
@@ -480,6 +494,7 @@ class ReviewDescriptionProcessor(PostProcessorApi):
                 camera_config.review.genai,
                 sorted(self.config.all_labels),
                 self.config.all_attributes,
+                named_objects,
             ),
         ).start()
 
@@ -514,7 +529,7 @@ class ReviewDescriptionProcessor(PostProcessorApi):
         camera_files = [
             entry.name
             for entry in os.scandir(preview_dir)
-            if entry.name.startswith(file_start)
+            if is_camera_preview_frame(entry.name, camera)
         ]
         camera_files.sort()
 
@@ -592,7 +607,7 @@ class ReviewDescriptionProcessor(PostProcessorApi):
                         Recordings.path,
                         Recordings.start_time,
                     )
-                    .where((ts >= Recordings.start_time) & (ts <= Recordings.end_time))
+                    .where(recording_overlap(ts, ts))
                     .where(Recordings.camera == camera)
                     .where(Recordings.stream_type == STREAM_TYPE_MAIN)
                     .order_by(Recordings.start_time.desc())
@@ -740,6 +755,29 @@ def format_classification_state_changes(
     return lines
 
 
+def get_named_objects(
+    detection_ids: list[str], attribute_labels: list[str]
+) -> list[tuple[str, str]]:
+    """Get the label and sub label of each named tracked object in a review item.
+
+    Editing a sub label after a review item ends rebuilds the stored sub_labels
+    without verified_objects, so the stored lists can't be paired by position.
+    """
+    events = (
+        Event.select(Event.label, Event.sub_label)
+        .where(Event.id.in_(detection_ids), Event.sub_label.is_null(False))
+        .order_by(Event.start_time)
+    )
+
+    # attribute sub labels (eg, delivery logos) are not names, which matches
+    # how the review maintainer records them
+    return [
+        (event.label, event.sub_label)
+        for event in events
+        if event.sub_label and event.sub_label not in attribute_labels
+    ]
+
+
 def run_analysis(
     requestor: InterProcessRequestor,
     genai_client: GenAIClient,
@@ -751,6 +789,7 @@ def run_analysis(
     genai_config: GenAIReviewConfig,
     labelmap_objects: list[str],
     attribute_labels: list[str],
+    named_objects: list[tuple[str, str]] | None,
 ) -> None:
     start = datetime.datetime.now().timestamp()
 
@@ -775,11 +814,20 @@ def run_analysis(
     unified_objects = []
 
     objects_list = final_data["data"]["objects"]
-    sub_labels_list = final_data["data"]["sub_labels"]
 
-    for i, verified_label in enumerate(final_data["data"]["verified_objects"]):
-        object_type = verified_label.replace("-verified", "").replace("_", " ")
-        name = titlecase(sub_labels_list[i].replace("_", " "))
+    if named_objects is None:
+        # live review items record a sub label for every verified object
+        named_objects = [
+            (verified_label.replace("-verified", ""), sub_label)
+            for verified_label, sub_label in zip(
+                final_data["data"]["verified_objects"],
+                final_data["data"]["sub_labels"],
+            )
+        ]
+
+    for label, sub_label in named_objects:
+        object_type = label.replace("_", " ")
+        name = titlecase(sub_label.replace("_", " "))
         unified_objects.append(f"{name} ← {object_type}")
 
     for label in objects_list:

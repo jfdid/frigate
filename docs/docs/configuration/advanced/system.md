@@ -65,7 +65,16 @@ go2rtc:
 
 This section sets environment variables in the Frigate process for those unable to modify the environment of the container, like within Home Assistant OS. It's meant for process settings such as `LIBVA_DRIVER_NAME` or the TensorFlow thread counts below. Docker users should set environment variables in their `docker run` command (`-e LIBVA_DRIVER_NAME=i965`) or `docker-compose.yml` file (`environment:` section) instead. Values set here are stored in plain text in your config file, so credentials belong in `secrets.yaml`, Docker environment variables, or Docker secrets instead.
 
-Names prefixed with `FRIGATE_` set here also take part in `{FRIGATE_VARIABLE_NAME}` substitution (see [below](#substitution-sources-and-precedence)), but `secrets.yaml` is the better home for them.
+Besides `FRIGATE_` names, only these are accepted, and a variable already set in the container environment keeps its container value:
+
+- `LIBVA_DRIVER_NAME` and `HSA_OVERRIDE_GFX_VERSION`
+- `TF_INTRA_OP_PARALLELISM_THREADS`, `TF_INTER_OP_PARALLELISM_THREADS`, `TF_DATASET_THREAD_POOL_SIZE`, and `SHM_MAX_FRAMES`
+- `USE_FP16`, `HF_HUB_OFFLINE`, and `TRANSFORMERS_OFFLINE`
+- `HF_ENDPOINT`, `GITHUB_ENDPOINT`, `GITHUB_RAW_ENDPOINT`, and `TF_KERAS_MOBILENET_V2_WEIGHTS_URL` (an `http://` or `https://` URL)
+
+Any other name is ignored with a warning and must be set in the container environment.
+
+Names prefixed with `FRIGATE_` set here take part in `{FRIGATE_VARIABLE_NAME}` substitution (see [below](#substitution-sources-and-precedence)), but `secrets.yaml` is the better home for them. Of these, only `FRIGATE_JWT_SECRET` is also set in the process environment.
 
 <ConfigTabs>
 <TabItem value="ui">
@@ -360,6 +369,7 @@ For example, in Nginx:
 
 ```
 location /frigate {
+    proxy_set_header Host $host;
     proxy_set_header X-Ingress-Path /frigate;
     proxy_pass http://frigate_backend;
 }
@@ -397,9 +407,9 @@ To do this:
 2. Update the `ffmpeg.path` in your Frigate config to `/config/custom-ffmpeg`.
 3. Restart Frigate and the custom version will be used if the steps above were done correctly.
 
-Both binaries have to be executable by Frigate's unprivileged runtime user, so `chmod 755` them after extracting. The startup ownership sweep runs only once, so anything you add to `/config` later keeps whatever ownership and mode you gave it.
+Both binaries have to be executable by Frigate's unprivileged runtime user, so `chmod 755` them after extracting. go2rtc runs as its own user, so the build must be world-executable for go2rtc to use it (`ffmpeg:` sources, the birdseye restream and transcoded live streams). The startup ownership sweep runs only once, so anything you add to `/config` later keeps whatever ownership and mode you gave it.
 
-There is one exception, and it only affects [`FRIGATE_ROOT_SERVICES`](/configuration/non_root#keeping-individual-services-root) listing `frigate`. That mode runs Frigate as root while still handing `/config` to the unprivileged runtime user, so anything running as that user could swap the binary and gain root. A build inside any of Frigate's writable volumes (`/config`, `/media/frigate`, the cache and shm dirs) is ignored there and the bundled one is used, with a warning in the log. Keep the build somewhere root-owned (any absolute `ffmpeg.path` works, so a read-only bind mount such as `/opt/custom-ffmpeg` is enough) if you need both. The default mode and `FRIGATE_RUN_AS_ROOT=true` are unaffected and behave exactly as they always have.
+There is one exception, and it only affects [`FRIGATE_ROOT_SERVICES`](/configuration/non_root#keeping-individual-services-root) listing `frigate` or `go2rtc`. That mode runs the listed service as root while still handing `/config` to the unprivileged runtime user, so anything running as that user could swap the binary and gain root. A build inside any of Frigate's writable volumes (`/config`, `/media/frigate`, the cache and shm dirs) is ignored by the root service, which uses the bundled one and logs a warning. A service that is not listed keeps using the custom build. Keep the build somewhere root-owned (any absolute `ffmpeg.path` works, so a read-only bind mount such as `/opt/custom-ffmpeg` is enough) if you need both. The default mode and `FRIGATE_RUN_AS_ROOT=true` are unaffected and behave exactly as they always have.
 
 ### Custom go2rtc version
 

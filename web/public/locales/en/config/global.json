@@ -40,7 +40,7 @@
     },
     "cookie_secure": {
       "label": "Secure cookie flag",
-      "description": "Set the secure flag on the auth cookie; should be true when using TLS."
+      "description": "Always set the secure flag on the auth cookie. Frigate sets it automatically when serving TLS; enable this when a reverse proxy terminates TLS in front of Frigate. A proxy that connects to the TLS port must serve Frigate to browsers over HTTPS."
     },
     "session_length": {
       "label": "Session length",
@@ -154,6 +154,10 @@
       "label": "Cooldown period",
       "description": "Cooldown (seconds) between notifications to avoid spamming recipients."
     },
+    "ttl": {
+      "label": "Notification TTL",
+      "description": "How the push service handles a notification sent while an alert is active if your device can't be reached. Immediate delivers it right away or drops it. Reliable keeps retrying for up to 30 seconds. The notification sent when an alert ends is always kept for up to an hour."
+    },
     "enabled_in_config": {
       "label": "Original notifications state",
       "description": "Indicates whether notifications were enabled in the original static configuration."
@@ -222,6 +226,10 @@
   "telemetry": {
     "label": "Telemetry",
     "description": "System telemetry and stats options including GPU and network bandwidth monitoring.",
+    "analytics": {
+      "label": "Share anonymous analytics",
+      "description": "Send one anonymous usage report a day to help the Frigate maintainers decide what to support. Nothing is sent until this is on."
+    },
     "network_interfaces": {
       "label": "Network interfaces",
       "description": "List of network interface name prefixes to monitor for bandwidth statistics."

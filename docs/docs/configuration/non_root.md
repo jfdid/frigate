@@ -36,6 +36,8 @@ There are two reasons to use it:
 
 Try the device grants and `EXTRA_GROUPS` first. The `frigate` service runs the API and every ffmpeg process that decodes your camera streams, so listing it puts those back on root as well, not just your detectors.
 
+Listing `go2rtc` without `frigate` doesn't separate the two. go2rtc's API accepts unauthenticated config changes from inside the container, so the unprivileged `frigate` service can make a root go2rtc run ffmpeg with any arguments, which can overwrite any file as root.
+
 A listed service also stops honoring a [custom ffmpeg or go2rtc build](/configuration/advanced/system#custom-dependencies) kept in `/config`, since that directory stays owned by the unprivileged user and a binary there would run as root. `FRIGATE_RUN_AS_ROOT=true` has no such restriction.
 
 Recordings and exports are owned by `PUID`/`PGID` as soon as they're written, even by a root service. Snapshots, thumbnails, and other files under `clips/` are corrected on each restart, so they can show as root-owned from the host until then. A listed service also keeps root's home directory, so library caches go to the container layer instead of `/config`. The same applies to the [detector runtimes](/frigate/network_requirements#detector-runtimes) Frigate installs at first start (Hailo, MemryX, AXEngine): a root `frigate` service installs them into `/root/.local`, which is lost when the container is recreated, and never loads a copy left behind in `/config/.local`.
@@ -71,13 +73,14 @@ Both the script and the boot sweep report progress, so you can tell a slow sweep
 
 ```
 [INFO] fix-ownership: scanning /media/frigate for ownership mismatches; this may take a while on large filesystems
+[INFO] fix-ownership: still scanning /media/frigate, 2481000 entries checked, 2390112 need changes
 [WARN] fix-ownership: adjusting ownership of 4823941 entries under /media/frigate
 [INFO] fix-ownership: /media/frigate 5% (241197/4823941 entries)
 [INFO] fix-ownership: /media/frigate 10% (482394/4823941 entries)
 [INFO] fix-ownership: finished /media/frigate in 12m 4s
 ```
 
-The scan has no percentage because the total isn't known until it finishes. Watch the boot sweep with `docker logs -f frigate`.
+The scan has no percentage because the total isn't known until it finishes, so it reports a running count every 30 seconds instead. Watch the boot sweep with `docker logs -f frigate`.
 
 Once the volumes are aligned, start Frigate normally. A file at `/config/.permissions_version` records what was done, so later boots skip the sweep unless you change `PUID`/`PGID`.
 
@@ -381,6 +384,8 @@ One Docker specific trap: published ports are inserted ahead of the host firewal
 ## Known limitations
 
 `telemetry.stats.network_bandwidth` uses nethogs, which needs `CAP_NET_ADMIN` and `CAP_NET_RAW` and therefore root. The stat is turned off automatically when Frigate isn't running as root, with one warning in the log. Use `FRIGATE_ROOT_SERVICES=frigate` (or `FRIGATE_RUN_AS_ROOT=true`) if you need it.
+
+Rockchip NPU and GPU usage come from `/sys/kernel/debug`, which the kernel makes readable only by root. To keep these stats, bind the two load files into the container as shown in the [Rockchip installation steps](/frigate/installation#rockchip-platform). Without them, Frigate logs one warning and leaves the stats out.
 
 go2rtc's ffmpeg processes no longer appear in Intel GPU stats. Frigate reads per-process GPU usage from `/proc/<pid>/fdinfo`, which the kernel won't let one user read for another user's processes, so anything go2rtc spawns is invisible to it. Overall GPU utilization is unaffected.
 

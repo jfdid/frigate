@@ -782,13 +782,6 @@
             "title": "Potvrdi lozinku",
             "placeholder": "Potvrdi lozinku"
           },
-          "strength": {
-            "title": "Snaga lozinke: ",
-            "weak": "Slaba",
-            "medium": "Srednje jaka",
-            "strong": "Snažna",
-            "veryStrong": "Vrlo snažna"
-          },
           "requirements": {
             "title": "Zahtjevi za lozinku:",
             "length": "Najmanje 8 znakova"
@@ -904,8 +897,6 @@
     "title": "Frigate+ postavke",
     "apiKey": {
       "title": "Frigate+ API ključ",
-      "validated": "Frigate+ API ključ je detektiran i validiran",
-      "notValidated": "Frigate+ API ključ nije detektiran ili nije validiran",
       "desc": "Frigate+ API ključ omogućuje integraciju s Frigate+ uslugom.",
       "plusLink": "Pročitajte više o Frigate+"
     },

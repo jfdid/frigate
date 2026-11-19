@@ -31,6 +31,7 @@ from frigate.const import (
 )
 from frigate.util.builtin import clean_camera_user_pass, escape_special_characters
 from frigate.util.env import UnknownVariableError, substitute_frigate_vars
+from frigate.util.live_streams import is_valid_go2rtc_stream_name
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +262,7 @@ def is_vaapi_amd_driver() -> bool:
         output = p.stdout.decode("unicode_escape").split("\n")
 
         # VA Info will print out the friendly name of the driver
-        return any("AMD Radeon Graphics" in line for line in output)
+        return any(" for AMD " in line for line in output)
 
 
 def get_amd_gpu_stats() -> dict[str, str] | None:
@@ -743,12 +744,60 @@ def get_openvino_npu_stats() -> dict[str, str] | None:
         return None
 
 
+ROCKCHIP_DEBUGFS_DIR = "/sys/kernel/debug"
+# debugfs is root-only, so a non-root install binds the driver load files here
+ROCKCHIP_LOAD_DIR = "/rockchip"
+
+_rockchip_load_warning_logged = False
+
+
+def _read_rockchip_load(driver: str) -> str | None:
+    """Read a Rockchip driver's load file.
+
+    The kernel makes debugfs readable only by root, so when Frigate isn't
+    root the file is read from where the compose file binds it instead.
+
+    Args:
+        driver: The driver's debugfs directory, rknpu or rkrga
+
+    Returns:
+        The file's contents, or None if neither location could be read
+    """
+    global _rockchip_load_warning_logged
+
+    denied = False
+    for base in (ROCKCHIP_DEBUGFS_DIR, ROCKCHIP_LOAD_DIR):
+        try:
+            with open(os.path.join(base, driver, "load")) as f:
+                return f.read()
+        except PermissionError:
+            denied = True
+        except OSError:
+            continue
+
+    # a board without one of the drivers binds only the file it has, so
+    # warn only when nothing is bound at all
+    if (
+        denied
+        and not _rockchip_load_warning_logged
+        and not os.path.isdir(ROCKCHIP_LOAD_DIR)
+    ):
+        logger.warning(
+            "Rockchip GPU and NPU usage stats are unavailable because %s is only "
+            "readable by root; bind the load files into the container to enable "
+            "them, see https://docs.frigate.video/frigate/installation#rockchip-platform",
+            ROCKCHIP_DEBUGFS_DIR,
+        )
+        _rockchip_load_warning_logged = True
+
+    return None
+
+
 def get_rockchip_gpu_stats() -> dict[str, str | float] | None:
     """Get GPU stats using rk."""
-    try:
-        with open("/sys/kernel/debug/rkrga/load") as f:
-            content = f.read()
-    except FileNotFoundError:
+    content = _read_rockchip_load("rkrga")
+
+    if content is None:
         return None
 
     load_values = []
@@ -775,18 +824,17 @@ def get_rockchip_gpu_stats() -> dict[str, str | float] | None:
 
 def get_rockchip_npu_stats() -> dict[str, float | str] | None:
     """Get NPU stats using rk."""
-    try:
-        with open("/sys/kernel/debug/rknpu/load") as f:
-            npu_output = f.read()
+    npu_output = _read_rockchip_load("rknpu")
 
-            if "Core0:" in npu_output:
-                # multi core NPU
-                core_loads = re.findall(r"Core\d+:\s*(\d+)%", npu_output)
-            else:
-                # single core NPU
-                core_loads = re.findall(r"NPU load:\s+(\d+)%", npu_output)
-    except FileNotFoundError:
-        core_loads = None
+    if npu_output is None:
+        return None
+
+    if "Core0:" in npu_output:
+        # multi core NPU
+        core_loads = re.findall(r"Core\d+:\s*(\d+)%", npu_output)
+    else:
+        # single core NPU
+        core_loads = re.findall(r"NPU load:\s+(\d+)%", npu_output)
 
     if not core_loads:
         return None
@@ -840,6 +888,83 @@ def get_axcl_npu_stats() -> dict[str, str | float] | None:
         pass
 
     return None
+
+
+_axelera_board_temp_cache: tuple[float, float] | None = None
+_axelera_board_temp_error_until = 0.0
+_AXELERA_BOARD_TEMP_TTL = 5.0
+_AXELERA_BOARD_TEMP_ERROR_COOLDOWN = 60.0
+
+
+def get_axelera_board_temp() -> float | None:
+    """Get the Axelera Metis board temperature through the SDK's axcmd tool.
+
+    The read goes through the board controller and does not open an inference
+    stream, so it is safe to call while a detector is running. ``axcmd`` ships
+    with the runtime wheel; ``find_tool`` prefers the runtime-installed copy
+    under the user base. Results are cached for a few seconds so one stats tick
+    spawns axcmd at most once, and a failed read starts a cooldown so an
+    unresponsive board does not delay every stats update.
+
+    NOTE: this function is blocking (up to ~5s on a hung board).
+    """
+    global _axelera_board_temp_cache
+    global _axelera_board_temp_error_until
+
+    now = time.monotonic()
+    if (
+        _axelera_board_temp_cache is not None
+        and now - _axelera_board_temp_cache[0] < _AXELERA_BOARD_TEMP_TTL
+    ):
+        return _axelera_board_temp_cache[1]
+
+    if now < _axelera_board_temp_error_until:
+        # the last read already cost up to 5s; back off instead of paying
+        # that cost again on every stats update while the board is down
+        return None
+
+    try:
+        from frigate.util.runtime_deps import find_tool
+
+        axcmd_path = find_tool("axcmd")
+    except Exception:  # noqa: BLE001
+        axcmd_path = shutil.which("axcmd")
+
+    if axcmd_path is None or not os.path.exists(axcmd_path):
+        return None
+
+    try:
+        result = sp.run(
+            [axcmd_path, "--board-temp"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, sp.TimeoutExpired):
+        _axelera_board_temp_error_until = now + _AXELERA_BOARD_TEMP_ERROR_COOLDOWN
+        return None
+
+    if result.returncode != 0:
+        _axelera_board_temp_error_until = now + _AXELERA_BOARD_TEMP_ERROR_COOLDOWN
+        return None
+
+    # anchor on the board-controller line ("N: temp_sensorX@YY = <value>") so
+    # unrelated "= <number>" output (firmware/version preambles) is not picked up
+    match = re.search(r"temp_sensor[^=\n]*=\s*([\d.]+)", result.stdout)
+
+    if match is None:
+        _axelera_board_temp_error_until = now + _AXELERA_BOARD_TEMP_ERROR_COOLDOWN
+        return None
+
+    try:
+        temp = round(float(match.group(1)), 1)
+    except ValueError:
+        _axelera_board_temp_error_until = now + _AXELERA_BOARD_TEMP_ERROR_COOLDOWN
+        return None
+
+    _axelera_board_temp_cache = (now, temp)
+    return temp
 
 
 def try_get_info(f, h, default="N/A", sensor=None):
@@ -1024,9 +1149,15 @@ def is_go2rtc_arbitrary_exec_allowed() -> bool:
 
 
 def is_restricted_go2rtc_source(stream_source: str) -> bool:
-    """Check if a stream source is a restricted type (echo, expr, or exec)
-    and the GO2RTC_ALLOW_ARBITRARY_EXEC override is not set."""
-    if not stream_source.strip().startswith(("echo:", "expr:", "exec:")):
+    """Check if a stream source is restricted and the
+    GO2RTC_ALLOW_ARBITRARY_EXEC override is not set.
+
+    Restricted sources are the echo, expr and exec schemes, and any source
+    using go2rtc's `${VAR:default}` expansion, which go2rtc runs over the raw
+    config before parsing and whose default can name an exec source.
+    """
+    source = stream_source.strip()
+    if not source.startswith(("echo:", "expr:", "exec:")) and "${" not in source:
         return False
     return not is_go2rtc_arbitrary_exec_allowed()
 
@@ -1094,6 +1225,7 @@ class Go2rtcStreamIssue(str, Enum):
     restricted = "restricted"
     unknown_variable = "unknown_variable"
     invalid_placeholder = "invalid_placeholder"
+    invalid_name = "invalid_name"
 
 
 def find_restricted_go2rtc_stream_changes(
@@ -1105,12 +1237,17 @@ def find_restricted_go2rtc_stream_changes(
     in the saved config for the same stream is left alone, so streams the
     operator configured on disk keep working; any other source must resolve
     its {FRIGATE_*} placeholders and pass `is_restricted_go2rtc_api_source`.
+    New stream names must pass `is_valid_go2rtc_stream_name`.
     """
     old_streams = old_streams if isinstance(old_streams, dict) else {}
     new_streams = new_streams if isinstance(new_streams, dict) else {}
     issues: dict[str, Go2rtcStreamIssue] = {}
 
     for name, stream in new_streams.items():
+        if name not in old_streams and not is_valid_go2rtc_stream_name(str(name)):
+            issues[name] = Go2rtcStreamIssue.invalid_name
+            continue
+
         existing = _go2rtc_stream_sources(old_streams.get(name))
 
         for source in _go2rtc_stream_sources(stream):
@@ -1142,6 +1279,85 @@ def find_restricted_go2rtc_stream_changes(
                 break
 
     return issues
+
+
+# go2rtc runs `ffmpeg.bin` and `ngrok.command`, and every other `ffmpeg` key is a
+# template of ffmpeg arguments that `#video=<name>` and friends can reference.
+# `exec.allow_paths` and `echo.allow_paths` choose the binaries go2rtc may run.
+_GO2RTC_EXEC_SECTIONS = ("ffmpeg", "ngrok", "exec", "echo")
+
+
+def find_restricted_go2rtc_exec_changes(
+    old_go2rtc: dict[str, Any] | None, new_go2rtc: dict[str, Any] | None
+) -> list[str]:
+    """Return the go2rtc exec-related keys added or changed through the API.
+
+    These are only accepted with arbitrary exec enabled. Keys already in the
+    saved config are left alone, the same as stream sources.
+    """
+    if is_go2rtc_arbitrary_exec_allowed():
+        return []
+
+    old_go2rtc = old_go2rtc if isinstance(old_go2rtc, dict) else {}
+    new_go2rtc = new_go2rtc if isinstance(new_go2rtc, dict) else {}
+    changed: list[str] = []
+
+    for section in _GO2RTC_EXEC_SECTIONS:
+        old = old_go2rtc.get(section)
+        new = new_go2rtc.get(section)
+
+        if not isinstance(new, dict):
+            if new is not None and new != old:
+                changed.append(section)
+            continue
+
+        old = old if isinstance(old, dict) else {}
+        changed.extend(
+            f"{section}.{key}" for key, value in new.items() if old.get(key) != value
+        )
+
+    return changed
+
+
+def apply_go2rtc_ffmpeg_config(
+    go2rtc_config: dict[str, Any], ffmpeg_path: str
+) -> list[str]:
+    """Set go2rtc's ffmpeg binary and exec allowlist for startup.
+
+    Unless arbitrary exec is enabled, `ffmpeg.bin` is forced to Frigate's ffmpeg,
+    `ngrok` is disabled, and go2rtc may only run Frigate's ffmpeg from `exec:` and
+    `echo:` sources. Templates in the saved config are kept.
+
+    Returns:
+        The keys that were overridden or removed
+    """
+    allowed = is_go2rtc_arbitrary_exec_allowed()
+    restricted: list[str] = []
+
+    ffmpeg = go2rtc_config.get("ffmpeg")
+    if not isinstance(ffmpeg, dict):
+        ffmpeg = go2rtc_config["ffmpeg"] = {}
+
+    if ffmpeg.get("bin") is None:
+        ffmpeg["bin"] = ffmpeg_path
+    elif ffmpeg["bin"] != ffmpeg_path and not allowed:
+        restricted.append("ffmpeg.bin")
+        ffmpeg["bin"] = ffmpeg_path
+
+    # go2rtc merges its config files and this one loads last, so setting these
+    # keys also overrides the HomeKit file and anything saved through its API
+    if not allowed:
+        forced = {
+            "ngrok": {"command": ""},
+            "exec": {"allow_paths": [ffmpeg_path]},
+            "echo": {"allow_paths": [ffmpeg_path]},
+        }
+        for key, value in forced.items():
+            if key in go2rtc_config and go2rtc_config[key] != value:
+                restricted.append(key)
+            go2rtc_config[key] = value
+
+    return restricted
 
 
 def ffprobe_stream(ffmpeg, path: str, detailed: bool = False) -> sp.CompletedProcess:

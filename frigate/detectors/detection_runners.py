@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import onnxruntime as ort
 
+from frigate.const import MODEL_CACHE_DIR
 from frigate.util.model import get_ort_providers
 from frigate.util.rknn_converter import auto_convert_model, is_rknn_compatible
 
@@ -55,6 +56,9 @@ _PROVIDER_LABELS = {
 LIGHTER_ANE_EP_NAME = "LighterANE"
 LIGHTER_ANE_LIBRARY = "/usr/lib/lighter/liblighter_ane_ep.so"
 
+# AMD's MIGraphX plugin execution provider, installed in the ROCm image
+MIGRAPHX_EP_NAME = "MIGraphXExecutionProvider"
+
 
 def get_lighter_ane_devices() -> list[Any]:
     """Get the Neural Engine devices lighter's provider offers, registering it once.
@@ -79,6 +83,42 @@ def get_lighter_ane_devices() -> list[Any]:
             return []
 
         devices = [d for d in ort.get_ep_devices() if d.ep_name == LIGHTER_ANE_EP_NAME]
+
+    return devices
+
+
+def get_migraphx_devices() -> list[Any]:
+    """Get the AMD GPU devices the MIGraphX provider offers, registering it once.
+
+    Returns:
+        The provider's ONNX Runtime devices, or an empty list outside the ROCm
+        image or without an AMD GPU
+    """
+    # Import here to avoid circular imports
+    from frigate.detectors.hardware import detect_amd_gpu
+
+    try:
+        import onnxruntime_ep_migraphx
+    except ImportError:
+        return []
+
+    # ONNX Runtime finds the provider's GPUs in the same /sys/class/drm entries,
+    # so an AMD GPU here means the provider lists it once registered
+    if detect_amd_gpu() is None:
+        return []
+
+    devices = [d for d in ort.get_ep_devices() if d.ep_name == MIGRAPHX_EP_NAME]
+
+    if not devices:
+        try:
+            ort.register_execution_provider_library(
+                MIGRAPHX_EP_NAME, onnxruntime_ep_migraphx.get_library_path()
+            )
+        except Exception as e:
+            logger.warning("Failed to load the MIGraphX provider: %s", e)
+            return []
+
+        devices = [d for d in ort.get_ep_devices() if d.ep_name == MIGRAPHX_EP_NAME]
 
     return devices
 
@@ -113,6 +153,8 @@ def get_ort_session_options(
     sess_options = ort.SessionOptions()
 
     if cpu:
+        # ORT reads the CPU arena flag from session options, not provider options.
+        sess_options.enable_cpu_mem_arena = False
         # idle intra-op threads otherwise spin for ~1s after every run, keeping
         # most cores busy while an enrichment runs even once a second
         sess_options.add_session_config_entry("session.intra_op.allow_spinning", "0")
@@ -756,12 +798,41 @@ def get_optimized_runner(
                 ONNXModelRunner(session, model_type=model_type),
             )
 
+    if (
+        device != "CPU"
+        and not ONNXModelRunner.is_migraphx_complex_model(model_type)
+        and (migraphx_devices := get_migraphx_devices())
+    ):
+        migraphx_cache_dir = os.path.join(MODEL_CACHE_DIR, "migraphx/ort")
+        os.makedirs(migraphx_cache_dir, exist_ok=True)
+        sess_options = get_ort_session_options(model_type) or ort.SessionOptions()
+        # only the first AMD GPU is used, matching detect_amd_gpu
+        sess_options.add_provider_for_devices(
+            migraphx_devices[:1], {"cache_dir": migraphx_cache_dir}
+        )
+
+        try:
+            session = ort.InferenceSession(model_path, sess_options=sess_options)
+        except Exception as e:
+            logger.warning(
+                "Failed to load %s with MIGraphX, using the default providers: %s",
+                model_path,
+                e,
+            )
+        else:
+            return _record_runner(
+                model_path,
+                model_type,
+                ONNXModelRunner(session, model_type=model_type),
+            )
+
     providers, options = get_ort_providers(device == "CPU", device, **kwargs)
 
     if providers[0] == "CPUExecutionProvider":
         # In the default image, ONNXRuntime is used so we will only get CPUExecutionProvider
-        # In other images we will get CUDA / ROCm which are preferred over OpenVINO
-        # There is currently no way to prioritize OpenVINO over CUDA / ROCm in these images
+        # In other images we will get CUDA which is preferred over OpenVINO, while
+        # MIGraphX in the ROCm image is already handled above
+        # There is currently no way to prioritize OpenVINO over CUDA in these images
         if device != "CPU" and is_openvino_gpu_npu_available():
             return _record_runner(
                 model_path,
@@ -789,15 +860,6 @@ def get_optimized_runner(
                 options[0]["device_id"],
             ),
         )
-
-    if (
-        providers
-        and providers[0] == "MIGraphXExecutionProvider"
-        and ONNXModelRunner.is_migraphx_complex_model(model_type)
-    ):
-        # Don't use MIGraphX for models that are not supported
-        providers.pop(0)
-        options.pop(0)
 
     return _record_runner(
         model_path,

@@ -296,7 +296,8 @@ class CameraState:
         return frame_copy
 
     def finished(self, obj_id: str) -> None:
-        del self.tracked_objects[obj_id]
+        # state rebuilt after a resolution or scene change no longer has the object
+        self.tracked_objects.pop(obj_id, None)
 
     def on(self, event_type: str, callback: Callable[..., Any]) -> None:
         self.callbacks[event_type].append(callback)
@@ -392,7 +393,6 @@ class CameraState:
                 "attributes": new_obj.obj_data["attributes"],
                 "current_estimated_speed": 0,
                 "velocity_angle": 0,
-                "path_data": [],
                 "recognized_license_plate": None,
                 "recognized_license_plate_score": None,
             }
