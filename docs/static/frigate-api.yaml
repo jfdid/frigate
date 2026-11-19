@@ -10,6 +10,25 @@ servers:
   - url: https://demo.frigate.video/api
   - url: http://localhost:5001/api
 paths:
+  /analytics/preview:
+    get:
+      tags:
+        - Analytics
+      summary: Get Analytics Preview
+      description: |-
+        **Access:** Admin role required.
+
+        Get the analytics report Frigate would send next, without sending it.
+      operationId: get_analytics_preview_analytics_preview_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+        - frigateAdminAuth: []
+      x-required-role: admin
   /auth/first_time_login:
     get:
       tags:
@@ -3129,6 +3148,25 @@ paths:
         - frigateUserAuth: []
       x-required-role: any
       description: '**Access:** Any authenticated user.'
+  /plus/validate:
+    post:
+      tags:
+        - App
+      summary: Validate Plus Key
+      description: |-
+        **Access:** Admin role required.
+
+        Validate the configured Frigate+ API key with the Frigate+ server.
+      operationId: validate_plus_key_plus_validate_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+        - frigateAdminAuth: []
+      x-required-role: admin
   /recognized_license_plates:
     get:
       tags:
@@ -6371,6 +6409,7 @@ paths:
           required: false
           schema:
             type: integer
+            minimum: 0
             description: Padding to apply to the vod.
             default: 0
             title: Padding
@@ -7576,6 +7615,7 @@ paths:
           required: false
           schema:
             type: integer
+            minimum: 1
             default: 30
             title: Scale
       responses:

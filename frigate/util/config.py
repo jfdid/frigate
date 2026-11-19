@@ -1,8 +1,12 @@
 """configuration utils."""
 
 import asyncio
+import contextlib
+import errno
+import ipaddress
 import logging
 import os
+import re
 import shutil
 from functools import cache
 from typing import Any
@@ -44,14 +48,14 @@ DROPPED_DETECTOR_OPTIONS = {
 }
 
 
-# Trees the unprivileged runtime user can write. A root frigate service must
-# not execute a binary from any of them; a compromised uid-1000 process could
+# Trees the unprivileged runtime user can write. A root service must not
+# execute a binary from any of them; a compromised uid-1000 process could
 # plant one and be root after the next restart.
 RUNTIME_USER_WRITABLE_DIRS = (CONFIG_DIR, BASE_DIR, CACHE_DIR, "/dev/shm", "/tmp")
 
 
-def frigate_service_is_granular_root() -> bool:
-    """Report whether FRIGATE_ROOT_SERVICES runs frigate as root.
+def service_is_granular_root(service: str) -> bool:
+    """Report whether FRIGATE_ROOT_SERVICES runs the given service as root.
 
     The escape hatch is excluded: it never sweeps /config and leaves no
     unprivileged service running, so custom binaries stay as safe as they
@@ -64,7 +68,7 @@ def frigate_service_is_granular_root() -> bool:
         return False
 
     entries = os.environ.get("FRIGATE_ROOT_SERVICES", "").split(",")
-    return any("".join(entry.split()) == "frigate" for entry in entries)
+    return any("".join(entry.split()) == service for entry in entries)
 
 
 def is_runtime_user_writable(path: str) -> bool:
@@ -77,35 +81,57 @@ def is_runtime_user_writable(path: str) -> bool:
 
 
 @cache
-def _warn_ignored_ffmpeg_path(path: str) -> None:
+def _warn_ignored_ffmpeg_path(path: str, service: str) -> None:
     """Warn once per path; resolution runs per camera and per binary."""
     logger.warning(
-        "Ignoring ffmpeg.path %s because FRIGATE_ROOT_SERVICES runs frigate as root and that location is writable by the unprivileged user; using the bundled build",
+        "Ignoring ffmpeg.path %s because FRIGATE_ROOT_SERVICES runs %s as root and that location is writable by the unprivileged user; using the bundled build",
         path,
+        service,
     )
 
 
-def resolve_ffmpeg_path(path: str, binary: str = "ffmpeg") -> str:
+# ffmpeg commands are built as strings and split on whitespace, so a custom path
+# must stay a single plain token
+_CUSTOM_FFMPEG_PATH = re.compile(r"/[\w.+@/-]+")
+
+
+def is_valid_ffmpeg_path(path: str) -> bool:
+    """Check that a custom ffmpeg path has no whitespace, quotes or shell syntax."""
+    return not path.startswith("/") or _CUSTOM_FFMPEG_PATH.fullmatch(path) is not None
+
+
+def resolve_ffmpeg_path(
+    path: str, binary: str = "ffmpeg", service: str = "frigate"
+) -> str:
     """Resolve an ffmpeg version alias or custom path to a binary path.
 
     A bare version alias that is no longer bundled (for example one that was
     dropped when the default version changed) falls back to the default
     bundled version so existing configs keep working across an upgrade or a
-    revert. Custom install paths (anything absolute) are used as-is, except
-    one in a runtime-user-writable tree while FRIGATE_ROOT_SERVICES makes
-    frigate root; see RUNTIME_USER_WRITABLE_DIRS.
+    revert. Custom install paths (anything absolute) are used as-is. While
+    FRIGATE_ROOT_SERVICES makes the service that execs it root, a custom path
+    is resolved to its real location and refused inside a runtime-user-writable
+    tree; see RUNTIME_USER_WRITABLE_DIRS. Paths that fail
+    `is_valid_ffmpeg_path` also fall back to the default.
     """
-    if path == "default" or (
-        not path.startswith("/") and path not in INCLUDED_FFMPEG_VERSIONS
+    if (
+        path == "default"
+        or not is_valid_ffmpeg_path(path)
+        or (not path.startswith("/") and path not in INCLUDED_FFMPEG_VERSIONS)
     ):
         version = DEFAULT_FFMPEG_VERSION
     elif path in INCLUDED_FFMPEG_VERSIONS:
         version = path
+    elif not service_is_granular_root(service):
+        return f"{path}/bin/{binary}"
     else:
-        if not (frigate_service_is_granular_root() and is_runtime_user_writable(path)):
-            return f"{path}/bin/{binary}"
+        # return the resolved form so a link in the path cannot be retargeted
+        # after the check
+        real = os.path.realpath(f"{path}/bin/{binary}")
+        if is_valid_ffmpeg_path(real) and not is_runtime_user_writable(real):
+            return real
 
-        _warn_ignored_ffmpeg_path(path)
+        _warn_ignored_ffmpeg_path(path, service)
         version = DEFAULT_FFMPEG_VERSION
 
     return f"/usr/lib/ffmpeg/{version}/bin/{binary}"
@@ -126,6 +152,49 @@ def redact_credential(obj: dict[str, Any], key: str) -> None:
         obj.pop(key, None)
 
 
+LISTEN_HOSTNAME = re.compile(
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*"
+)
+
+
+def parse_listen_address(value: int | str) -> tuple[int | str, int]:
+    """Validate a networking.listen value and rebuild it from its parsed parts.
+
+    Accepts a port, "host:port", "*:port", or "[IPv6]:port", where host is an
+    IPv4 address or an RFC 1123 hostname. nginx receives the rebuilt value
+    verbatim, so anything else raises ValueError.
+
+    Returns:
+        The normalized value (an int for a bare port) and the port
+    """
+    if isinstance(value, bool) or not isinstance(value, int | str):
+        raise ValueError(f"invalid listen value: {value!r}")
+
+    host, sep, port_text = str(value).strip().rpartition(":")
+
+    if not re.fullmatch(r"[0-9]{1,5}", port_text) or not (1 <= int(port_text) <= 65535):
+        raise ValueError(f"invalid listen port: {value!r}")
+
+    port = int(port_text)
+
+    if not sep:
+        return port, port
+
+    if host.startswith("[") and host.endswith("]"):
+        address = ipaddress.IPv6Address(host[1:-1])
+
+        if address.scope_id:
+            raise ValueError(f"listen address must not have a scope ID: {value!r}")
+
+        return f"[{address}]:{port}", port
+
+    if host != "*" and not LISTEN_HOSTNAME.fullmatch(host):
+        raise ValueError(f"invalid listen address: {value!r}")
+
+    return f"{host}:{port}", port
+
+
 def find_config_file() -> str:
     """Return the path of the config file to use.
 
@@ -143,6 +212,28 @@ def find_config_file() -> str:
             return alternate
 
     return config_path
+
+
+def _write_config(config_file: str, yaml: YAML, config: dict[str, Any]) -> None:
+    config_file = os.path.realpath(config_file)
+    st = os.stat(config_file)
+    tmp_file = f"{config_file}.tmp"
+    with open(tmp_file, "w") as f:
+        yaml.dump(config, f)
+    os.chmod(tmp_file, st.st_mode)
+
+    with contextlib.suppress(PermissionError):
+        os.chown(tmp_file, st.st_uid, st.st_gid)
+
+    try:
+        os.replace(tmp_file, config_file)
+    except OSError as e:
+        if e.errno != errno.EBUSY:
+            raise
+
+        # a file bind mount can't be renamed over, so write it in place
+        shutil.copyfile(tmp_file, config_file)
+        os.remove(tmp_file)
 
 
 def migrate_frigate_config(config_file: str):
@@ -192,8 +283,7 @@ def migrate_frigate_config(config_file: str):
     if previous_version < "0.14":
         logger.info(f"Migrating frigate config from {previous_version} to 0.14...")
         new_config = migrate_014(new_config)
-        with open(config_file, "w") as f:
-            yaml.dump(new_config, f)
+        _write_config(config_file, yaml, new_config)
         previous_version = "0.14"
 
         logger.info("Migrating export file names...")
@@ -210,56 +300,48 @@ def migrate_frigate_config(config_file: str):
     if previous_version < "0.15-0":
         logger.info(f"Migrating frigate config from {previous_version} to 0.15-0...")
         new_config = migrate_015_0(new_config)
-        with open(config_file, "w") as f:
-            yaml.dump(new_config, f)
+        _write_config(config_file, yaml, new_config)
         previous_version = "0.15-0"
 
     if previous_version < "0.15-1":
         logger.info(f"Migrating frigate config from {previous_version} to 0.15-1...")
         new_config = migrate_015_1(new_config)
-        with open(config_file, "w") as f:
-            yaml.dump(new_config, f)
+        _write_config(config_file, yaml, new_config)
         previous_version = "0.15-1"
 
     if previous_version < "0.16-0":
         logger.info(f"Migrating frigate config from {previous_version} to 0.16-0...")
         new_config = migrate_016_0(new_config)
-        with open(config_file, "w") as f:
-            yaml.dump(new_config, f)
+        _write_config(config_file, yaml, new_config)
         previous_version = "0.16-0"
 
     if previous_version < "0.17-0":
         logger.info(f"Migrating frigate config from {previous_version} to 0.17-0...")
         new_config = migrate_017_0(new_config)
-        with open(config_file, "w") as f:
-            yaml.dump(new_config, f)
+        _write_config(config_file, yaml, new_config)
         previous_version = "0.17-0"
 
     if previous_version < "0.18-0":
         logger.info(f"Migrating frigate config from {previous_version} to 0.18-0...")
         new_config = migrate_018_0(new_config)
-        with open(config_file, "w") as f:
-            yaml.dump(new_config, f)
+        _write_config(config_file, yaml, new_config)
         previous_version = "0.18-0"
 
     if previous_version < "0.19-0":
         logger.info(f"Migrating frigate config from {previous_version} to 0.19-0...")
         new_config = migrate_019_0(new_config)
-        with open(config_file, "w") as f:
-            yaml.dump(new_config, f)
+        _write_config(config_file, yaml, new_config)
         previous_version = "0.19-0"
 
     if needs_models:
         logger.info("Migrating frigate detectors and model to models...")
         new_config = migrate_models(new_config)
-        with open(config_file, "w") as f:
-            yaml.dump(new_config, f)
+        _write_config(config_file, yaml, new_config)
 
     if needs_detector_rename:
         logger.info("Migrating renamed frigate detectors...")
         new_config = rename_hailo_detector(new_config)
-        with open(config_file, "w") as f:
-            yaml.dump(new_config, f)
+        _write_config(config_file, yaml, new_config)
 
     logger.info("Finished frigate config migration...")
 
@@ -1000,12 +1082,12 @@ def get_relative_coordinates(
     # old native resolution coordinates
     where = f" for camera {camera_name}" if camera_name else ""
     if mask:
-        if isinstance(mask, list) and any(x > "1.0" for x in mask[0].split(",")):
+        if isinstance(mask, list) and any(float(x) > 1.0 for x in mask[0].split(",")):
             relative_masks = []
             for m in mask:
                 points = m.split(",")
 
-                if any(x > "1.0" for x in points):
+                if any(float(x) > 1.0 for x in points):
                     rel_points = []
                     for i in range(0, len(points), 2):
                         x = int(points[i])
@@ -1026,7 +1108,7 @@ def get_relative_coordinates(
                     relative_masks.append(m)
 
             mask = relative_masks
-        elif isinstance(mask, str) and any(x > "1.0" for x in mask.split(",")):
+        elif isinstance(mask, str) and any(float(x) > 1.0 for x in mask.split(",")):
             points = mask.split(",")
             rel_points = []
 

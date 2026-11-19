@@ -15,6 +15,7 @@ import uvicorn
 from peewee import SqliteDatabase
 from peewee_migrate import Router
 
+from frigate.analytics.reporter import AnalyticsReporter
 from frigate.api.auth import hash_password
 from frigate.api.fastapi_app import create_fastapi_app
 from frigate.camera import CameraMetrics, PTZMetrics
@@ -75,7 +76,7 @@ from frigate.models import (
 from frigate.notices import install_registry
 from frigate.notices.registry import NoticeRegistry
 from frigate.object_detection.base import ObjectDetectProcess
-from frigate.object_detection.util import detection_frame_size
+from frigate.object_detection.util import create_detection_input_shm
 from frigate.output.output import OutputProcess
 from frigate.ptz.autotrack import PtzAutoTracker
 from frigate.ptz.onvif import OnvifController
@@ -398,14 +399,7 @@ class FrigateApp:
             model = self.config.model_for_camera(name)
             model_cameras[model.scene].append(name)
 
-            try:
-                shm_in = UntrackedSharedMemory(
-                    name=name,
-                    create=True,
-                    size=detection_frame_size(model),
-                )
-            except FileExistsError:
-                shm_in = UntrackedSharedMemory(name=name)
+            shm_in = create_detection_input_shm(name, self.config.models)
 
             try:
                 shm_out = UntrackedSharedMemory(
@@ -524,6 +518,15 @@ class FrigateApp:
         )
         self.stats_emitter.start()
 
+    def start_analytics_reporter(self) -> None:
+        self.analytics_reporter = AnalyticsReporter(
+            self.config_holder,
+            self.stats_emitter,
+            self.notice_registry,
+            self.stop_event,
+        )
+        self.analytics_reporter.start()
+
     def start_watchdog(self) -> None:
         self.frigate_watchdog = FrigateWatchdog(self.detectors, self.stop_event)
 
@@ -581,7 +584,12 @@ class FrigateApp:
 
     def init_auth(self) -> None:
         if self.config.auth.enabled:
-            if User.select().count() == 0:
+            if (
+                User.select().count() == 0
+                or User.select()
+                .where((User.username == "admin") & (User.password_hash == ""))
+                .exists()
+            ):
                 password = secrets.token_hex(16)
                 password_hash = hash_password(
                     password, iterations=self.config.auth.hash_iterations
@@ -593,6 +601,9 @@ class FrigateApp:
                         User.password_hash: password_hash,
                         User.notification_tokens: [],
                     }
+                ).on_conflict(
+                    conflict_target=[User.username],
+                    update={User.password_hash: password_hash},
                 ).execute()
 
                 self.config.auth.admin_first_time_login = True
@@ -614,6 +625,7 @@ class FrigateApp:
                     username="admin",
                     role="admin",
                     password_hash=password_hash,
+                    password_changed_at=datetime.datetime.now(),
                     notification_tokens=[],
                 ).execute()
 
@@ -623,6 +635,19 @@ class FrigateApp:
                 logger.info(f"***    Password: {password}   ***")
                 logger.info("********************************************************")
                 logger.info("********************************************************")
+        else:
+            # Notification registrations store tokens on the admin row. Its
+            # empty password hash marks it for a generated password if auth
+            # is enabled later.
+            if User.select().count() == 0:
+                User.insert(
+                    {
+                        User.username: "admin",
+                        User.role: "admin",
+                        User.password_hash: "",
+                        User.notification_tokens: [],
+                    }
+                ).execute()
 
     def start(self) -> None:
         logger.info(f"Starting Frigate ({VERSION})")
@@ -675,6 +700,7 @@ class FrigateApp:
         self.start_audio_processor()
         self.start_storage_maintainer()
         self.start_stats_emitter()
+        self.start_analytics_reporter()
         self.start_timeline_processor()
         self.start_event_processor()
         self.start_event_cleanup()
@@ -709,6 +735,8 @@ class FrigateApp:
                 host="127.0.0.1",
                 port=5001,
                 log_level="error",
+                # outlive nginx's 60s upstream keepalive so nginx closes idle connections first
+                timeout_keep_alive=75,
             )
         finally:
             self.stop()
@@ -774,6 +802,8 @@ class FrigateApp:
         self.event_cleanup.join()
         self.record_cleanup.join()
         self.stats_emitter.join()
+        # a send in flight can hold the thread for the whole request timeout
+        self.analytics_reporter.join(timeout=5)
         self.frigate_watchdog.join()
         self.camera_maintainer.join()
         self.db.stop()

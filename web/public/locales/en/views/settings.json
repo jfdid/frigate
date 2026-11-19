@@ -1,4 +1,9 @@
 {
+  "analyticsPreview": {
+    "show": "Preview the report",
+    "desc": "Frigate sends this report once a day while sharing is on. It never includes camera names, zones, labels, or addresses.",
+    "error": "Unable to build the preview"
+  },
   "documentTitle": {
     "default": "Settings - Frigate",
     "authentication": "Authentication Settings - Frigate",
@@ -367,7 +372,8 @@
         "nameLength": "Camera name must be 64 characters or less",
         "invalidCharacters": "Camera name contains invalid characters",
         "nameExists": "Camera name already exists",
-        "customUrlRtspRequired": "Custom URLs must begin with \"rtsp://\" or \"rtsps://\". Manual configuration is required for non-RTSP camera streams."
+        "customUrlRtspRequired": "Custom URLs must begin with \"rtsp://\" or \"rtsps://\". Manual configuration is required for non-RTSP camera streams.",
+        "onvifPortInvalid": "ONVIF port must be a whole number from 1 to 65535"
       }
     },
     "step2": {
@@ -1041,7 +1047,8 @@
     "title": "Users",
     "management": {
       "title": "User Management",
-      "desc": "Manage this Frigate instance's user accounts."
+      "desc": "Manage this Frigate instance's user accounts.",
+      "authDisabled": "Built-in authentication is disabled. These accounts are only used to log in once it's enabled."
     },
     "addUser": "Add User",
     "updatePassword": "Reset Password",
@@ -1083,13 +1090,6 @@
           "confirm": {
             "title": "Confirm Password",
             "placeholder": "Confirm Password"
-          },
-          "strength": {
-            "title": "Password strength: ",
-            "weak": "Weak",
-            "medium": "Medium",
-            "strong": "Strong",
-            "veryStrong": "Very Strong"
           },
           "requirements": {
             "title": "Password requirements:",
@@ -1254,7 +1254,14 @@
       "1hour": "Suspend for 1 hour",
       "12hours": "Suspend for 12 hours",
       "24hours": "Suspend for 24 hours",
+      "custom": "Suspend until...",
       "untilRestart": "Suspend until restart"
+    },
+    "customSuspension": {
+      "title": "Custom suspension time",
+      "description": "Suspend notifications for this camera until the selected time.",
+      "untilLabel": "Suspend until",
+      "invalidTime": "Pick a time in the future."
     },
     "cancelSuspension": "Cancel Suspension",
     "toast": {
@@ -1278,8 +1285,13 @@
     },
     "apiKey": {
       "title": "Frigate+ API Key",
-      "validated": "Frigate+ API key is detected and validated",
-      "notValidated": "Frigate+ API key is not detected or not validated",
+      "formatValid": "Frigate+ API key is detected and matches the expected format",
+      "formatInvalid": "Frigate+ API key is not detected or does not match the expected format",
+      "validate": "Validate with Frigate+",
+      "validating": "Validating…",
+      "serverValid": "Frigate+ accepted this API key",
+      "serverInvalid": "Frigate+ rejected this API key",
+      "serverUnreachable": "Unable to reach Frigate+ to validate this API key",
       "desc": "The Frigate+ API key enables integration with the Frigate+ service.",
       "plusLink": "Read more about Frigate+"
     },
@@ -1310,6 +1322,7 @@
       "loadingAvailableModels": "Loading available models…",
       "selectModel": "Select a model",
       "noModelsAvailable": "No models available",
+      "showIncompatible": "Show incompatible models",
       "filter": {
         "ariaLabel": "Filter models by type",
         "baseModels": "Base Models",
@@ -1931,6 +1944,10 @@
       "saved": "Saved"
     }
   },
+  "notificationTtl": {
+    "immediate": "Immediate",
+    "reliable": "Reliable"
+  },
   "retainMode": {
     "all": "All",
     "motion": "Motion",
@@ -2048,7 +2065,8 @@
       "profileBaseDisabled": "Recording is disabled in this camera's base config, so enabling it in a profile has no effect. Enable recording in the base config and use a profile to disable it instead."
     },
     "notifications": {
-      "profileBaseDisabled": "No cameras have notifications enabled in their base config, so enabling them in a profile has no effect. Enable notifications in the base config of at least one camera."
+      "profileBaseDisabled": "No cameras have notifications enabled in their base config, so enabling them in a profile has no effect. Enable notifications in the base config of at least one camera.",
+      "ttlDelay": "Notifications can arrive up to 30 seconds late and still link to the live view after the review item has ended."
     },
     "birdseye": {
       "objectTrackingDetectDisabled": "Birdseye includes tracked objects, but object detection is disabled for this camera. The camera will not appear in Birdseye.",

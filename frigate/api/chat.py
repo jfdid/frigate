@@ -1,5 +1,6 @@
 """Chat and LLM tool calling APIs."""
 
+import asyncio
 import base64
 import json
 import logging
@@ -55,6 +56,7 @@ from frigate.genai.utils import (
 )
 from frigate.jobs.export import ExportQueueFullError, start_export_job
 from frigate.jobs.vlm_watch import (
+    VLMWatchJob,
     get_vlm_watch_job,
     start_vlm_watch_job,
     stop_vlm_watch_job,
@@ -998,7 +1000,7 @@ async def _execute_tool_internal(
     elif tool_name == "start_camera_watch":
         return await _execute_start_camera_watch(request, arguments)
     elif tool_name == "stop_camera_watch":
-        return _execute_stop_camera_watch()
+        return _execute_stop_camera_watch(request)
     elif tool_name == "get_profile_status":
         return _execute_get_profile_status(request)
     elif tool_name == "get_recap":
@@ -1059,6 +1061,7 @@ async def _execute_start_camera_watch(
             dispatcher=request.app.dispatcher,
             labels=labels,
             zones=zones,
+            username=request.headers.get("remote-user", ""),
         )
     except RuntimeError as e:
         logger.exception("Failed to start VLM watch job: %s", e)
@@ -1074,7 +1077,18 @@ async def _execute_start_camera_watch(
     }
 
 
-def _execute_stop_camera_watch() -> dict[str, Any]:
+def _can_cancel_watch_job(request: Request, job: VLMWatchJob) -> bool:
+    """Admins can cancel any watch job; other users only jobs they started."""
+    role = request.headers.get("remote-role", "viewer")
+    username = request.headers.get("remote-user", "")
+    return role == "admin" or username == job.username
+
+
+def _execute_stop_camera_watch(request: Request) -> dict[str, Any]:
+    job = get_vlm_watch_job()
+    if job is not None and not _can_cancel_watch_job(request, job):
+        return {"success": False, "message": "Not authorized to cancel this watch job."}
+
     cancelled = stop_vlm_watch_job()
     if cancelled:
         return {"success": True, "message": "Watch job cancelled."}
@@ -1653,7 +1667,8 @@ async def chat_completion(
                     f"Calling LLM (iteration {tool_iterations + 1}/{max_iterations}) "
                     f"with {len(conversation)} message(s) in conversation"
                 )
-                response = genai_client.chat_with_tools(
+                response = await asyncio.to_thread(
+                    genai_client.chat_with_tools,
                     messages=conversation,
                     tools=llm_tools if llm_tools else None,
                     tool_choice="auto",
@@ -1906,11 +1921,7 @@ async def cancel_vlm_monitor(request: Request) -> JSONResponse:
             status_code=404,
         )
 
-    role = request.headers.get("remote-role", "viewer")
-    username = request.headers.get("remote-user", "")
-
-    # Admin can cancel any job; other users can only cancel jobs they started.
-    if role != "admin" and username != job.username:
+    if not _can_cancel_watch_job(request, job):
         return JSONResponse(
             content={
                 "success": False,

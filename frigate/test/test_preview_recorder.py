@@ -114,10 +114,10 @@ class TestPreviewRecorderFrameRate(unittest.TestCase):
         gaps = [b - a for a, b in zip(kept, kept[1:])]
         self.assertGreaterEqual(min(gaps), 1.0 - 1e-6)
 
-    def test_recording_disabled_keeps_only_the_first_frame(self):
+    def test_recording_disabled_keeps_no_frames(self):
         kept = feed(make_recorder(record_enabled=False), 60)
 
-        self.assertEqual(kept, [START])
+        self.assertEqual(kept, [])
 
 
 if __name__ == "__main__":

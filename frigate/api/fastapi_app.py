@@ -13,8 +13,8 @@ from slowapi.middleware import SlowAPIMiddleware
 from starlette_context import middleware, plugins
 from starlette_context.plugins import Plugin
 
-from frigate.api import app as main_app
 from frigate.api import (
+    analytics,
     auth,
     camera,
     chat,
@@ -31,6 +31,7 @@ from frigate.api import (
     record,
     review,
 )
+from frigate.api import app as main_app
 from frigate.api.auth import get_jwt_secret, limiter, require_admin_by_default
 from frigate.comms.dispatcher import Dispatcher
 from frigate.comms.event_metadata_updater import (
@@ -143,6 +144,7 @@ def create_fastapi_app(
 
     # Routes
     # Order of include_router matters: https://fastapi.tiangolo.com/tutorial/path-params/#order-matters
+    app.include_router(analytics.router)
     app.include_router(auth.router)
     app.include_router(camera.router)
     app.include_router(chat.router)
@@ -196,7 +198,9 @@ def create_fastapi_app(
             key_bytes = str(secret).encode("utf-8")
 
         app.jwt_token = OctKey.import_key(key_bytes)
+        app.user_sessions = auth.load_user_sessions()
     else:
         app.jwt_token = None
+        app.user_sessions = {}
 
     return app

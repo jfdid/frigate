@@ -85,6 +85,7 @@ class Recordings(Model):
     audio_rate = IntegerField(null=True)  # Hz; NULL = unknown (legacy rows)
     audio_codec = CharField(null=True, max_length=20)  # NULL = unknown (legacy rows)
     video_codec = CharField(null=True, max_length=20)  # NULL = unknown (legacy rows)
+    audio_duration = FloatField(null=True)  # seconds of audio samples; NULL = unknown
 
 
 class ExportCase(Model):
@@ -208,7 +209,7 @@ class NoticeStats(Model):
     mutes = IntegerField(default=0)
     first_seen = DateTimeField()
     last_seen = DateTimeField()
-    # watermarks for a future analytics reporter; unused until then
+    # lifetime counts when the current analytics install ID was created
     reported_occurrences = IntegerField(default=0)
     reported_acknowledgements = IntegerField(default=0)
     reported_mutes = IntegerField(default=0)

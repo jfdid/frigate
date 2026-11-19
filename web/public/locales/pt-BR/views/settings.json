@@ -589,13 +589,6 @@
             "title": "Confirmar Senha",
             "placeholder": "Confirmar Senha"
           },
-          "strength": {
-            "title": "Nível de segurança da senha: ",
-            "weak": "Fraca",
-            "medium": "Mediana",
-            "strong": "Forte",
-            "veryStrong": "Muito Forte"
-          },
           "requirements": {
             "title": "Requisitos da senha:",
             "length": "Pelo menos 12 caracteres"
@@ -726,8 +719,6 @@
     "title": "Configurações do Frigate+",
     "apiKey": {
       "title": "Chave de API do Frigate+",
-      "validated": "A chave de API do Frigate+ detectada e validada",
-      "notValidated": "Chave de API do Frigate+ não detectada ou não validada",
       "desc": "A chave de API do Frigate+ habilita a integração com o serviço do Frigate+.",
       "plusLink": "Leia mais sobre o Frigate+"
     },
