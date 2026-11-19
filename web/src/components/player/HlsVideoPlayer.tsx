@@ -27,6 +27,31 @@ import { useIsAdmin } from "@/hooks/use-is-admin";
 const USE_NATIVE_HLS = false;
 const HLS_MIME_TYPE = "application/vnd.apple.mpegurl" as const;
 const DEFAULT_MAX_BUFFER_LENGTH_S = 10;
+
+// Frigate answers playlist and segment requests within milliseconds, so a
+// request with no first byte after a few seconds is lost, not slow: a
+// phone switching networks, or a VPN tunnel re-establishing, drops it
+// without an error. hls.js waits 20s for the multivariant playlist and
+// 10s for the rest before retrying. Give up sooner and retry more often,
+// keeping about the same total budget for a server that really is slow.
+// Load time limits stay generous for large segments on slow connections.
+const FIRST_BYTE_TIMEOUT_MS = 4000;
+const PLAYLIST_LOAD_POLICY: HlsConfig["playlistLoadPolicy"] = {
+  default: {
+    maxTimeToFirstByteMs: FIRST_BYTE_TIMEOUT_MS,
+    maxLoadTimeMs: 20000,
+    timeoutRetry: { maxNumRetry: 4, retryDelayMs: 0, maxRetryDelayMs: 0 },
+    errorRetry: { maxNumRetry: 2, retryDelayMs: 1000, maxRetryDelayMs: 8000 },
+  },
+};
+const FRAG_LOAD_POLICY: HlsConfig["fragLoadPolicy"] = {
+  default: {
+    maxTimeToFirstByteMs: FIRST_BYTE_TIMEOUT_MS,
+    maxLoadTimeMs: 120000,
+    timeoutRetry: { maxNumRetry: 6, retryDelayMs: 0, maxRetryDelayMs: 0 },
+    errorRetry: { maxNumRetry: 6, retryDelayMs: 1000, maxRetryDelayMs: 8000 },
+  },
+};
 const unsupportedErrorCodes: number[] = [
   MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED,
   MediaError.MEDIA_ERR_DECODE,
@@ -279,6 +304,9 @@ export default function HlsVideoPlayer({
       maxBufferLength: bufferLengthRef.current ?? DEFAULT_MAX_BUFFER_LENGTH_S,
       maxBufferSize: 20 * 1000 * 1000,
       startPosition: currentSource.startPosition,
+      manifestLoadPolicy: PLAYLIST_LOAD_POLICY,
+      playlistLoadPolicy: PLAYLIST_LOAD_POLICY,
+      fragLoadPolicy: FRAG_LOAD_POLICY,
     };
 
     // every quality switch and chunk change recreates the instance, so
