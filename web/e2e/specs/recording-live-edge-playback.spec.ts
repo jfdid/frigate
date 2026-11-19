@@ -301,6 +301,60 @@ test.describe("Recording live edge playback: desktop @medium", () => {
       .poll(async () => (await videoState(frigateApp))?.currentTime ?? 0)
       .toBeGreaterThan(playedTo - 2);
   });
+
+  test("a lost playlist request after a seek is retried within seconds", async ({
+    frigateApp,
+  }) => {
+    if (frigateApp.isMobile) {
+      test.skip();
+      return;
+    }
+
+    const page = frigateApp.page;
+    await openAtLiveEdge(frigateApp, 60);
+    await waitForPlayback(frigateApp);
+
+    // a phone switching networks under a VPN loses requests without an
+    // error. Lose the first playlist request of the seek's new source
+    let seeking = false;
+    let lost = false;
+    const segments: string[] = [];
+    await page.route(/\/vod\//, (route) => {
+      const url = route.request().url();
+
+      if (seeking && !lost && url.endsWith("/master.m3u8")) {
+        lost = true;
+        return;
+      }
+
+      if (seeking && /\/seg-\d+\.ts$/.test(url)) {
+        segments.push(url);
+      }
+
+      return route.fallback();
+    });
+
+    // well before where playback started, so the seek builds a new source
+    const target = Math.floor(NOW.getTime() / 1000) - 240;
+    const segmentId = await page.evaluate((time) => {
+      const ids = Array.from(
+        document.querySelectorAll<HTMLElement>(".segment[data-segment-id]"),
+      ).map((el) => Number(el.dataset.segmentId));
+      return ids.reduce((best, id) =>
+        Math.abs(id - time) < Math.abs(best - time) ? id : best,
+      );
+    }, target);
+    seeking = true;
+    await page
+      .locator(`.segment[data-segment-id="${segmentId}"]`)
+      .click({ force: true });
+
+    // hls.js waits 20s by default before retrying this request
+    await expect.poll(() => lost).toBe(true);
+    await expect
+      .poll(() => segments.length, { timeout: 8_000 })
+      .toBeGreaterThan(0);
+  });
 });
 
 for (const mobile of [false, true]) {

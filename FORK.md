@@ -63,6 +63,7 @@ are in `FORK.local.md`, which is not committed.
 | 14 | Camera view | recording view: fullscreen controls while live and a Go live button | Live had no controls, so no way to go fullscreen; going live needed a drag to the top of a possibly long timeline |
 | 15 | Camera view | recording view: Blue Iris style shuttle for speed and reverse | One slider under the video: pause in the middle, forward or reverse at 1 to 16x. Kept on its own branch (`feature/shuttle`) so it can be dropped |
 | 16 | Previews | previews: a frame every second, and skip frames that fail to load | Still scenes and stationary objects got one preview frame every 30s, so scrubbing (and reverse) through them showed almost nothing; one missing frame froze the scrub preview for good |
+| 17 | Playback | player: retry lost video requests after 4s instead of 20s | On a phone over a VPN, a request lost while switching networks stalled playback after a seek for 10 to 20s |
 
 Commits 1 to 7, 9 to 12, 14 and 15 are frontend only (`web/`). Commit 8 is backend only
 (`frigate/`), commit 13 only touches the nginx config (`docker/`), and commit
@@ -540,6 +541,37 @@ docker exec $C sh -c 'df -h /tmp/cache; du -sh /tmp/cache/preview_frames'
 docker logs $C 2>&1 | grep -c "Failed to retrieve many frames"
 ```
 
+### Lost requests on a phone (commit 17)
+
+**Symptom.** On a phone connected over WireGuard (and around the switch
+from cell to home wifi), scrubbing back a few minutes sometimes took
+about 20s to play. On a PC it was instant, and the server answered every
+playlist and segment in 5 to 15ms, so neither the disk nor the server
+was the cause.
+
+**Cause.** A scrub back past where playback started builds a new source:
+the multivariant playlist, the media playlist, then a segment, one after
+another. A request lost in a re-establishing tunnel gets no error, so
+hls.js waits out its timeouts: 20s for the multivariant playlist
+(`manifestLoadPolicy` has no first-byte limit), 10s for the rest. Measured
+with a test server that drops the first request: 20s and 10s exactly. With
+a sub stream, the auto quality governor's 10s startup budget happens to
+rescue the load by switching streams.
+
+**Fix.** `HlsVideoPlayer.tsx` sets the manifest, playlist and fragment
+load policies to a 4s time to first byte, with more timeout retries so
+the total budget for a slow server stays about the same. Load time limits
+are unchanged, so large segments on slow links still have time.
+
+**Server check, if it comes back.** nginx logs `request_time` for every
+request, including the transfer to the client:
+
+```bash
+C=frigate
+F='s/(^|.*[^0-9])([0-9]{1,3}(\.[0-9]{1,3}){3}) - [^ ]* \[([^]]+)\] "GET ([^ ]+) [^"]*" ([0-9]+) ([0-9]+) .*request_time="([^"]+)".*/\4  \2  \6  \7B  \8s  \5/p'
+docker logs --since 3m $C 2>&1 | grep -E '"GET /(vod|clips/preview|api/preview)' | sed -nE "$F" | cut -c1-170
+```
+
 ## 6. Tests
 
 ### Frontend e2e (Playwright, `web/e2e/`)
@@ -549,7 +581,7 @@ docker logs $C 2>&1 | grep -c "Failed to retrieve many frames"
 | `specs/recording-scrub-preview.spec.ts` | Preview follows a held handle, also after the edge grows; a tick doesn't drop a held handle; newest frame fallback; preview catches up when the handle stops; the edge keeps growing after release; a frame that fails to load (404) doesn't freeze the preview. Desktop and mobile |
 | `specs/camera-view.spec.ts` | A dashboard tile and a `/#camera` link open the Camera view live (handle reads Live, stream plays); Back returns to the dashboard; Controls opens the classic page; Desktop and mobile |
 | `specs/recording-live-handoff.spec.ts` | Live mode: releasing at the top plays live in the view (loading notice, then playing, unmuted, URL unchanged, stream connected while still held); releasing lower stays; leaving the zone cancels; dragging down leaves live; a press without a drag stays live; a timeline tap leaves live; the scroll wheel zooms the live stream. Desktop and mobile, plus a real touch drag through Chromium's DevTools protocol and the live edge marker position |
-| `specs/recording-live-edge-playback.spec.ts` | Real HLS playback through hls.js: playback that runs into the newest footage carries on live; a paused player stays paused; playback continues from the playhead across a tick; the Go live button, also from a historical view; the shuttle (speeds, pause, the speed menu, reverse, a timeline tap while reversing, reverse from live, reverse through cached frames, a missing frame, an earlier hour's mp4 and an hour boundary). Desktop and mobile |
+| `specs/recording-live-edge-playback.spec.ts` | Real HLS playback through hls.js: playback that runs into the newest footage carries on live; a paused player stays paused; playback continues from the playhead across a tick; a lost playlist request after a seek is retried within seconds; the Go live button, also from a historical view; the shuttle (speeds, pause, the speed menu, reverse, a timeline tap while reversing, reverse from live, reverse through cached frames, a missing frame, an earlier hour's mp4 and an hour boundary). Desktop and mobile |
 | `helpers/live-stream-mocker.ts` | Fake go2rtc MSE socket that streams `fixtures/media/live-3s.mp4` (3s 320x180 H.264 baseline, fragmented, codecs `avc1.42C01E`), so a live player really plays. Media goes out on `release()`; the clip is short, so release it once the player should be showing. Use with `LIVE_STREAM_CONFIG`, which restreams front_door through go2rtc |
 | `fixtures/media/recording-2s.mpegts` | 48 KB, 2s, 320x180 H.264 MPEG-TS segment used by the playback spec. The mock serves a playlist and coverage that grow with the requested window, repeating this segment with `EXT-X-DISCONTINUITY` |
 | `fixtures/media/preview-600s.mp4` | 62 KB, 600s, 1 fps 320x180 H.264 with a keyframe every 40 frames, like the preview writer's hourly mp4. Served with byte ranges |
