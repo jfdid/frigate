@@ -20,9 +20,9 @@ Last updated: 2026-10-15, on branch `mods`.
 | Upstream | `github.com/blakeblackshear/frigate` (remote `upstream`), branch `dev` |
 | Branch with all fork changes | `mods` (this branch, the fork's default on GitHub). Build and deploy from it. Named `overnight/scrub-fix` until 2026-10-15 |
 | Fork `dev` and `main` | Plain snapshots of upstream `dev` (`b79e04397`, older than this branch's base). No fork changes |
-| Upstream base of this branch | `62ca5b25e`, upstream `dev` after it merged v0.18.2 (2026-10-15), version 0.19.0-dev. Includes every fix in v0.18.1 and v0.18.2 |
+| Upstream base of this branch | `1c30924ff`, upstream `dev` on 2026-11-19, version 0.19.0-dev. Includes every fix up to v0.18.3. Merged in (see section 7), so the older base `62ca5b25e` is still in the history |
 
-Commit IDs change on every rebase, so this file refers to commits by subject.
+This file refers to commits by subject, because commit IDs changed on the rebases before 2026-11-19.
 List them with `git log --oneline upstream/dev..mods`.
 
 ### Building
@@ -59,7 +59,7 @@ are in `FORK.local.md`, which is not committed.
 | 10 | Live edge | recording view: play live inside the view at the live edge | Piece 3: live stream in place of the recording player, auto-live, warm-up, live edge marker |
 | 12 | Camera view | recording view: zoom and pan the live stream | Pinch/scroll zoom and drag to pan on the live stream, like the recording player |
 | 11 | Camera view | live: open cameras in the Camera view | One screen per camera: dashboard tiles, Birdseye and `/#camera` links open the recording view already live, the classic live page moves behind a Controls button. Also: the handle reads "Live" while live (a pinned time lagged the picture), and only user actions leave live |
-| 13 | Backend | nginx: don't warn about the go2rtc stream flag on every request | Upstream bug (from the v0.18.2 security fix): every authenticated request logged `using uninitialized "go2rtc_stream_proxy" variable` |
+| 13 | Backend | nginx: don't warn about the go2rtc stream flag on every request | Upstream bug (from the v0.18.2 security fix): every authenticated request logged `using uninitialized "go2rtc_stream_proxy" variable`. Upstream fixed it the same way (#24682); since the 2026-11-19 merge the file is upstream's and the commit has no effect |
 
 Commits 1 to 7 and 9 to 12 are frontend only (`web/`). Commit 8 is backend only
 (`frigate/`), and commit 13 only touches the nginx config (`docker/`). Documentation commits (`docs: ...`) only touch this file and
@@ -469,13 +469,41 @@ commits 1 and 2 cleanly. The others conflict, because `dev` reworked
 `DynamicVideoPlayer.tsx` (source anchoring, the load governor), the
 `SharedMemoryFrameManager`, and the e2e harness after 0.18. So:
 
-- **To follow `dev`:** rebase onto `upstream/dev` whenever you want newer
-  upstream work.
+- **To follow `dev`:** merge `upstream/dev` into `mods` whenever you want
+  newer upstream work, then merge `mods` into the feature branches (see
+  "Merging" below). Rebasing was used until 2026-10-15.
 - **To follow releases:** once upstream tags `v0.19.0`, rebase onto that tag,
   and from then on onto each release tag. Porting to 0.18.x would mean
   rewriting most of the commits and isn't worth it.
 
-### Procedure
+### Merging (since 2026-11-19)
+
+Feature branches (`feature/live-overlay`, `feature/shuttle`) are stacked on
+`mods` and pulled on the server, so history is never rewritten any more:
+
+```bash
+git switch mods && git pull
+git tag mods-before-<new-version> && git push origin mods-before-<new-version>   # backup
+git fetch upstream --tags
+git merge upstream/dev
+git switch feature/live-overlay && git merge mods
+git switch feature/shuttle && git merge feature/live-overlay
+```
+
+Then verify (below) and push all three. Other clones only need `git pull`.
+
+**Merge on 2026-11-19:** upstream `dev` `1c30924ff` (227 commits newer than
+`62ca5b25e`, including v0.18.3's security fixes). Conflicts:
+`auth_location.conf` (upstream made commit 13's change; took upstream's)
+and, on `feature/live-overlay`, `frigate/output/preview.py`: upstream now
+writes no preview frames while recording is off. Kept that, plus commit 16's
+`last_output_time` on the first frame;
+`test_recording_disabled_keeps_no_frames` follows upstream. A new upstream
+WebRTC test needed the `/?controls#front_door` open, like the others in its
+spec. Upstream moved to Playwright 1.65: run `npx playwright install
+chromium` after `npm ci`.
+
+### Rebase procedure (before 2026-11-19)
 
 ```bash
 cd ~/claude/frigate
