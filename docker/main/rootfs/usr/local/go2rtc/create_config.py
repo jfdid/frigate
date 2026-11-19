@@ -8,15 +8,17 @@ from typing import Any
 from ruamel.yaml import YAML
 
 sys.path.insert(0, "/opt/frigate")
-from frigate.const import (
-    BIRDSEYE_PIPE,
-    LIBAVFORMAT_VERSION_MAJOR,
-)
+from frigate.const import BIRDSEYE_PIPE
 from frigate.ffmpeg_presets import parse_preset_hardware_acceleration_encode
-from frigate.util.config import find_config_file, resolve_ffmpeg_path
+from frigate.util.config import (
+    find_config_file,
+    is_valid_ffmpeg_path,
+    resolve_ffmpeg_path,
+)
 from frigate.util.env import apply_config_env_vars, substitute_frigate_vars
 from frigate.util.live_streams import raw_transcode_streams
 from frigate.util.services import (
+    apply_go2rtc_ffmpeg_config,
     is_go2rtc_arbitrary_exec_allowed,
     is_restricted_go2rtc_source,
 )
@@ -38,16 +40,10 @@ try:
 except FileNotFoundError:
     config: dict[str, Any] = {}
 
-# No validator runs here, so install environment_vars ourselves. FRIGATE_
-# names only: anything else lands in os.environ, where the exec gate reads
-# GO2RTC_ALLOW_ARBITRARY_EXEC.
+# No validator runs here, so install environment_vars ourselves.
 config_env_vars = config.get("environment_vars")
 apply_config_env_vars(
-    {
-        key: value
-        for key, value in config_env_vars.items()
-        if str(key).startswith("FRIGATE_")
-    }
+    {str(key): value for key, value in config_env_vars.items()}
     if isinstance(config_env_vars, dict)
     else {}
 )
@@ -97,20 +93,17 @@ if go2rtc_config.get("rtsp", {}).get("password") is not None:
 
 # ensure ffmpeg path is set correctly
 path = config.get("ffmpeg", {}).get("path", "default")
-ffmpeg_path = resolve_ffmpeg_path(path, "ffmpeg")
+if not is_valid_ffmpeg_path(path):
+    print(
+        "[ERROR] ffmpeg path contains spaces, quotes or shell characters, using the default ffmpeg instead."
+    )
+ffmpeg_path = resolve_ffmpeg_path(path, "ffmpeg", "go2rtc")
 
-if go2rtc_config.get("ffmpeg") is None:
-    go2rtc_config["ffmpeg"] = {"bin": ffmpeg_path}
-elif go2rtc_config["ffmpeg"].get("bin") is None:
-    go2rtc_config["ffmpeg"]["bin"] = ffmpeg_path
-
-# need to replace ffmpeg command when using ffmpeg4
-if LIBAVFORMAT_VERSION_MAJOR < 59:
-    rtsp_args = "-fflags nobuffer -flags low_delay -stimeout 10000000 -user_agent go2rtc/ffmpeg -rtsp_transport tcp -i {input}"
-    if go2rtc_config.get("ffmpeg") is None:
-        go2rtc_config["ffmpeg"] = {"rtsp": rtsp_args}
-    elif go2rtc_config["ffmpeg"].get("rtsp") is None:
-        go2rtc_config["ffmpeg"]["rtsp"] = rtsp_args
+for key in apply_go2rtc_ffmpeg_config(go2rtc_config, ffmpeg_path):
+    print(
+        f"[ERROR] go2rtc option '{key}' was ignored because it is disabled by default for security. "
+        f"Set GO2RTC_ALLOW_ARBITRARY_EXEC=true to enable arbitrary exec."
+    )
 
 
 for name in list(go2rtc_config.get("streams", {})):
@@ -121,7 +114,7 @@ for name in list(go2rtc_config.get("streams", {})):
             formatted_stream = substitute_frigate_vars(stream)
             if is_restricted_go2rtc_source(formatted_stream):
                 print(
-                    f"[ERROR] Stream '{name}' uses a restricted source (echo/expr/exec) which is disabled by default for security. "
+                    f"[ERROR] Stream '{name}' uses a restricted source (echo/expr/exec or ${{VAR}}) which is disabled by default for security. "
                     f"Set GO2RTC_ALLOW_ARBITRARY_EXEC=true to enable arbitrary exec sources."
                 )
                 del go2rtc_config["streams"][name]
@@ -140,7 +133,7 @@ for name in list(go2rtc_config.get("streams", {})):
                 formatted_stream = substitute_frigate_vars(stream_item)
                 if is_restricted_go2rtc_source(formatted_stream):
                     print(
-                        f"[ERROR] Stream '{name}' item {i + 1} uses a restricted source (echo/expr/exec) which is disabled by default for security. "
+                        f"[ERROR] Stream '{name}' item {i + 1} uses a restricted source (echo/expr/exec or ${{VAR}}) which is disabled by default for security. "
                         f"Set GO2RTC_ALLOW_ARBITRARY_EXEC=true to enable arbitrary exec sources."
                     )
                     continue
@@ -156,7 +149,7 @@ for name in list(go2rtc_config.get("streams", {})):
             go2rtc_config["streams"][name] = filtered_streams
         else:
             print(
-                f"[ERROR] Stream '{name}' was removed because all sources were restricted (echo/expr/exec). "
+                f"[ERROR] Stream '{name}' was removed because all sources were restricted (echo/expr/exec or ${{VAR}}). "
                 f"Set GO2RTC_ALLOW_ARBITRARY_EXEC=true to enable arbitrary exec sources."
             )
             del go2rtc_config["streams"][name]
@@ -198,9 +191,13 @@ if config.get("birdseye", {}).get("restream", False):
     else:
         go2rtc_config["streams"] = {"birdseye": ffmpeg_cmd}
 
-# Write go2rtc_config to /dev/shm/go2rtc.yaml
-with open("/dev/shm/go2rtc.yaml", "w") as f:
+# The run script removes the old file first. Exclusive create never follows a
+# link the go2rtc user planted in sticky /dev/shm. The config contains camera
+# credentials, so it is not world-readable.
+fd = os.open(
+    "/dev/shm/go2rtc.yaml",
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+    0o640,
+)
+with os.fdopen(fd, "w") as f:
     yaml.dump(go2rtc_config, f)
-
-# config contains camera credentials; do not leave it world-readable
-os.chmod("/dev/shm/go2rtc.yaml", 0o640)

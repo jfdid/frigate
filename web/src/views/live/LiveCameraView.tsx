@@ -230,15 +230,16 @@ export default function LiveCameraView({
     }
   }, [streamNameLoaded, liveStreams, pinnedStream, clearPinnedStream]);
 
-  const { data: cameraMetadata } = useSWR<LiveStreamMetadata>(
-    isRestreamed ? `go2rtc/streams/${streamName}` : null,
-    {
-      revalidateOnFocus: false,
-      revalidateOnReconnect: false,
-      revalidateIfStale: false,
-      dedupingInterval: 60000,
-    },
-  );
+  const { data: cameraMetadata, isLoading: cameraMetadataLoading } =
+    useSWR<LiveStreamMetadata>(
+      isRestreamed ? `go2rtc/streams/${streamName}` : null,
+      {
+        revalidateOnFocus: false,
+        revalidateOnReconnect: false,
+        revalidateIfStale: false,
+        dedupingInterval: 60000,
+      },
+    );
 
   const webRTCAvailability = useWebRTCAvailableForStream(
     cameraMetadata,
@@ -511,7 +512,14 @@ export default function LiveCameraView({
     }
   }, [webRTCVerdictPending]);
 
-  useKeyboardListener(["m", "Escape"], (key, modifiers) => {
+  const toggleMic = () => {
+    setMic(!mic);
+    if (!mic && !audio) {
+      setAudio(true);
+    }
+  };
+
+  useKeyboardListener(["m", "t", "Escape"], (key, modifiers) => {
     if (!modifiers.down) {
       return true;
     }
@@ -525,7 +533,7 @@ export default function LiveCameraView({
         break;
       case "t":
         if (supports2WayTalk && talkAvailable) {
-          setMic(!mic);
+          toggleMic();
           return true;
         }
         break;
@@ -792,12 +800,7 @@ export default function LiveCameraView({
                         ? t("twoWayTalk.disable", { ns: "views/live" })
                         : t("twoWayTalk.enable", { ns: "views/live" })
                 }
-                onClick={() => {
-                  setMic(!mic);
-                  if (!mic && !audio) {
-                    setAudio(true);
-                  }
-                }}
+                onClick={toggleMic}
                 disabled={!cameraEnabled || debug || !talkAvailable}
               />
             )}
@@ -845,6 +848,7 @@ export default function LiveCameraView({
               onResetStream={resetStream}
               supportsAudioOutput={supportsAudioOutput}
               supports2WayTalk={supports2WayTalk}
+              streamMetadataLoading={cameraMetadataLoading}
               cameraEnabled={cameraEnabled}
               debug={debug}
               setDebug={setDebug}
@@ -871,9 +875,12 @@ export default function LiveCameraView({
                   growClassName,
                 )}
                 ref={clickOverlayRef}
-                style={{
-                  aspectRatio: constrainedAspectRatio,
-                }}
+                style={
+                  {
+                    aspectRatio: constrainedAspectRatio,
+                    "--camera-aspect": cameraAspectRatio,
+                  } as React.CSSProperties
+                }
               >
                 {clickOverlay && overlaySize.width > 0 && (
                   <div
@@ -912,7 +919,10 @@ export default function LiveCameraView({
                 )}
                 <LivePlayer
                   key={camera.name}
-                  className={fullscreen ? "rounded-none" : ""}
+                  className={cn(
+                    "aspect-[var(--camera-aspect)]",
+                    fullscreen && "rounded-none",
+                  )}
                   windowVisible
                   showStillWithoutActivity={false}
                   alwaysShowCameraName={false}
@@ -1005,6 +1015,7 @@ type FrigateCameraFeaturesProps = {
   onResetStream: () => void;
   supportsAudioOutput: boolean;
   supports2WayTalk: boolean;
+  streamMetadataLoading: boolean;
   cameraEnabled: boolean;
   debug: boolean;
   setDebug: (debug: boolean) => void;
@@ -1036,6 +1047,7 @@ function FrigateCameraFeatures({
   onResetStream,
   supportsAudioOutput,
   supports2WayTalk,
+  streamMetadataLoading,
   cameraEnabled,
   debug,
   setDebug,
@@ -1432,7 +1444,12 @@ function FrigateCameraFeatures({
                         !debug &&
                         isRestreamed && (
                           <div className="flex flex-row items-center gap-1 text-sm text-muted-foreground">
-                            {supportsAudioOutput ? (
+                            {streamMetadataLoading ? (
+                              <>
+                                <ActivityIndicator className="size-4" />
+                                <div>{t("stream.metadata.loading")}</div>
+                              </>
+                            ) : supportsAudioOutput ? (
                               <>
                                 <LuCheck className="size-4 text-success" />
                                 <div>{t("stream.audio.available")}</div>
@@ -1691,72 +1708,7 @@ function FrigateCameraFeatures({
       <DrawerContent className="max-h-[75dvh] overflow-hidden rounded-2xl">
         <div className="scrollbar-container mt-2 flex h-auto flex-col gap-2 overflow-y-auto px-2 py-4">
           <>
-            {isAdmin && (
-              <>
-                <FilterSwitch
-                  label={t("cameraSettings.camera")}
-                  isChecked={enabledState == "ON"}
-                  onCheckedChange={() =>
-                    sendEnabled(enabledState == "ON" ? "OFF" : "ON")
-                  }
-                />
-                <FilterSwitch
-                  label={t("cameraSettings.objectDetection")}
-                  isChecked={detectState == "ON"}
-                  onCheckedChange={() =>
-                    sendDetect(detectState == "ON" ? "OFF" : "ON")
-                  }
-                />
-                {recordingEnabled && (
-                  <FilterSwitch
-                    label={t("cameraSettings.recording")}
-                    isChecked={recordState == "ON"}
-                    onCheckedChange={() =>
-                      sendRecord(recordState == "ON" ? "OFF" : "ON")
-                    }
-                  />
-                )}
-                <FilterSwitch
-                  label={t("cameraSettings.snapshots")}
-                  isChecked={snapshotState == "ON"}
-                  onCheckedChange={() =>
-                    sendSnapshot(snapshotState == "ON" ? "OFF" : "ON")
-                  }
-                />
-                {audioDetectEnabled && (
-                  <FilterSwitch
-                    label={t("cameraSettings.audioDetection")}
-                    isChecked={audioState == "ON"}
-                    onCheckedChange={() =>
-                      sendAudio(audioState == "ON" ? "OFF" : "ON")
-                    }
-                  />
-                )}
-                {audioDetectEnabled && transcriptionEnabled && (
-                  <FilterSwitch
-                    label={t("cameraSettings.transcription")}
-                    disabled={audioState == "OFF"}
-                    isChecked={transcriptionState == "ON"}
-                    onCheckedChange={() =>
-                      sendTranscription(
-                        transcriptionState == "ON" ? "OFF" : "ON",
-                      )
-                    }
-                  />
-                )}
-                {autotrackingEnabled && (
-                  <FilterSwitch
-                    label={t("cameraSettings.autotracking")}
-                    isChecked={autotrackingState == "ON"}
-                    onCheckedChange={() =>
-                      sendAutotracking(autotrackingState == "ON" ? "OFF" : "ON")
-                    }
-                  />
-                )}
-              </>
-            )}
-
-            <div className="mt-3 flex flex-col gap-5">
+            <div className="mb-3 flex flex-col gap-5">
               {!isRestreamed && (
                 <div className="flex flex-col gap-2 p-2">
                   <Label>{t("stream.title")}</Label>
@@ -1809,6 +1761,7 @@ function FrigateCameraFeatures({
                       onSelect={onSelectStream}
                       onRetry={onResetStream}
                       disabled={debug || forceLowBandwidth}
+                      variant="grid"
                     />
 
                     {debug && (
@@ -1824,7 +1777,12 @@ function FrigateCameraFeatures({
                       !debug &&
                       isRestreamed && (
                         <div className="mt-1 flex flex-row items-center gap-1 text-sm text-muted-foreground">
-                          {supportsAudioOutput ? (
+                          {streamMetadataLoading ? (
+                            <>
+                              <ActivityIndicator className="size-4" size={14} />
+                              <div>{t("stream.metadata.loading")}</div>
+                            </>
+                          ) : supportsAudioOutput ? (
                             <>
                               <LuCheck className="size-4 text-success" />
                               <div>{t("stream.audio.available")}</div>
@@ -1953,6 +1911,73 @@ function FrigateCameraFeatures({
                     </p>
                   </div>
                 )}
+            </div>
+            {isAdmin && (
+              <>
+                <FilterSwitch
+                  label={t("cameraSettings.camera")}
+                  isChecked={enabledState == "ON"}
+                  onCheckedChange={() =>
+                    sendEnabled(enabledState == "ON" ? "OFF" : "ON")
+                  }
+                />
+                <FilterSwitch
+                  label={t("cameraSettings.objectDetection")}
+                  isChecked={detectState == "ON"}
+                  onCheckedChange={() =>
+                    sendDetect(detectState == "ON" ? "OFF" : "ON")
+                  }
+                />
+                {recordingEnabled && (
+                  <FilterSwitch
+                    label={t("cameraSettings.recording")}
+                    isChecked={recordState == "ON"}
+                    onCheckedChange={() =>
+                      sendRecord(recordState == "ON" ? "OFF" : "ON")
+                    }
+                  />
+                )}
+                <FilterSwitch
+                  label={t("cameraSettings.snapshots")}
+                  isChecked={snapshotState == "ON"}
+                  onCheckedChange={() =>
+                    sendSnapshot(snapshotState == "ON" ? "OFF" : "ON")
+                  }
+                />
+                {audioDetectEnabled && (
+                  <FilterSwitch
+                    label={t("cameraSettings.audioDetection")}
+                    isChecked={audioState == "ON"}
+                    onCheckedChange={() =>
+                      sendAudio(audioState == "ON" ? "OFF" : "ON")
+                    }
+                  />
+                )}
+                {audioDetectEnabled && transcriptionEnabled && (
+                  <FilterSwitch
+                    label={t("cameraSettings.transcription")}
+                    disabled={audioState == "OFF"}
+                    isChecked={transcriptionState == "ON"}
+                    onCheckedChange={() =>
+                      sendTranscription(
+                        transcriptionState == "ON" ? "OFF" : "ON",
+                      )
+                    }
+                  />
+                )}
+                {autotrackingEnabled && (
+                  <FilterSwitch
+                    label={t("cameraSettings.autotracking")}
+                    isChecked={autotrackingState == "ON"}
+                    onCheckedChange={() =>
+                      sendAutotracking(autotrackingState == "ON" ? "OFF" : "ON")
+                    }
+                  />
+                )}
+              </>
+            )}
+
+            <div className="mt-3 flex flex-col gap-5">
               {isRestreamed &&
                 Object.values(camera.live.streams).length > 0 && (
                   <div className="flex flex-col gap-2">

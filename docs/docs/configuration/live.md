@@ -38,7 +38,7 @@ Frigate [defaults to MSE](#why-does-frigate-prefer-mse-over-webrtc-for-live-view
 
 - The choices are saved **per device, per camera** in your browser's local storage.
 - **WebRTC is only selectable when it can actually work for that stream.** When it can't, the option is shown disabled with the reason inline, and a more detailed reason (the failing codecs, or why the connectivity check failed) is logged to your browser's console. Common reasons:
-  - **Not configured**: no `candidates` or `ice_servers` are set under `go2rtc.webrtc` (see [WebRTC extra configuration](#webrtc-extra-configuration)).
+  - **Not configured**: no `candidates` or `ice_servers` are set under `go2rtc.webrtc`, and the connectivity check failed with go2rtc's default candidates (see [WebRTC extra configuration](#webrtc-extra-configuration)). This is a setup note rather than an error, since live view works without WebRTC.
   - **Could not connect**: e.g. port `8555` isn't reachable, or a STUN/TURN server is misconfigured. Frigate runs a one-time WebRTC connectivity check when the Live view opens; the option may briefly show as "checking" while it runs.
   - **Unsupported video codec**: the stream's video codec can't be played over WebRTC in your browser, most commonly H.265/HEVC in Firefox or Edge.
   - **Unsupported audio codec**: WebRTC needs opus or G.711 audio, so a stream whose playback audio is only AAC (without an added opus/G.711 track) can't carry audio over WebRTC. See [Audio Support](#audio-support) for how to add one.
@@ -98,7 +98,7 @@ Additionally, when creating and editing camera groups in the UI, you can choose 
 
 :::note
 
-Frigate's default dashboard ("All Cameras") will always use the first entry you've defined in streams when playing live streams from your cameras.
+Frigate's default dashboard ("All Cameras") always uses the first entry in `streams`. That should be your highest quality stream, because Auto starts on the first stream and only steps down from there. To show a lower quality stream on a dashboard, create a camera group and choose the stream in each camera's [streaming settings](#streaming-options-on-camera-group-dashboards) for that group.
 
 :::
 
@@ -392,7 +392,12 @@ When your browser runs into problems playing back your camera streams, it will l
 
 - **stalled**
   - What it means: Playback has stalled because the player has fallen too far behind live (extended buffering or no data arriving).
-  - What to try: This is usually indicative of the browser struggling to decode too many high-resolution streams at once. Try selecting a lower-bandwidth stream (substream), reduce the number of live streams open, improve the network connection, or lower the camera resolution. Also check your camera's keyframe (I-frame) interval: shorter intervals make playback start and recover faster. You can also try increasing the timeout value in <NavPath path="Settings > UI" /> .
+  - What to try:
+    - This is usually indicative of the browser struggling to decode too many high-resolution streams at once.
+    - Try selecting a lower-bandwidth stream (substream), reduce the number of live streams open, improve the network connection, or lower the camera resolution.
+    - Also check your camera's keyframe (I-frame) interval: shorter intervals make playback start and recover faster.
+    - You can also try increasing the timeout value in <NavPath path="Settings > UI" /> .
+    - Also ensure your browser doesn't have JavaScript V8 optimizations disabled ("JavaScript optimisation and security" setting in Chrome-based browsers).
 
   - Possible console messages from the player code:
     - `Buffer time (10 seconds) exceeded, browser may not be playing media correctly.`

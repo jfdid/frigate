@@ -217,6 +217,8 @@ COPY docker/main/rootfs/ /
 
 # Frigate deps (ffmpeg, python, nginx, go2rtc, s6-overlay, etc)
 FROM slim-base AS deps
+LABEL org.opencontainers.image.source="https://github.com/blakeblackshear/frigate"
+
 ARG TARGETARCH
 ARG BASE_IMAGE
 
@@ -242,6 +244,9 @@ ENV PYTHONWARNINGS="ignore:::numpy.core.getlimits"
 
 # Set HailoRT to disable logging
 ENV HAILORT_LOGGER_PATH=NONE
+
+# Disable ONNX Runtime's usage telemetry to Microsoft
+ENV ORT_DISABLE_TELEMETRY=1
 
 # TensorFlow C++ logging suppression (must be set before import)
 # TF_CPP_MIN_LOG_LEVEL: 0=all, 1=INFO+, 2=WARNING+, 3=ERROR+ (we use 3 for errors only)
@@ -381,6 +386,7 @@ FROM deps AS frigate
 
 WORKDIR /opt/frigate/
 COPY --from=rootfs / /
+ENV FRIGATE_IMAGE_VARIANT=standard
 
 # Pre-compile bytecode so a read-only rootfs doesn't force re-parsing the
 # source tree on every boot (pip-installed packages are already compiled)

@@ -199,18 +199,14 @@ def events(
             sub_label_clauses.append(Event.sub_label.is_null())
 
         for label in filtered_sub_labels:
-            lowered = label.lower()
-            sub_label_clauses.append(
-                fn.LOWER(Event.sub_label.cast("text")) == lowered
-            )  # include exact matches (case-insensitive)
+            # SQLite LOWER() only folds ASCII, so lower both sides in SQL to
+            # keep non-ASCII names matching exactly
+            stored = fn.LOWER(Event.sub_label.cast("text"))
+            sub_label_clauses.append(stored == fn.LOWER(label))
 
-            # include this label when part of a list (LIKE is case-insensitive in sqlite for ASCII)
-            sub_label_clauses.append(
-                fn.LOWER(Event.sub_label.cast("text")) % f"*{lowered},*"
-            )
-            sub_label_clauses.append(
-                fn.LOWER(Event.sub_label.cast("text")) % f"*, {lowered}*"
-            )
+            # include this label when part of a list
+            sub_label_clauses.append(stored % fn.LOWER(f"*{label},*"))
+            sub_label_clauses.append(stored % fn.LOWER(f"*, {label}*"))
 
         sub_label_clause = reduce(operator.or_, sub_label_clauses)
         clauses.append(sub_label_clause)
@@ -291,12 +287,12 @@ def events(
             clauses.append(
                 reduce(
                     operator.or_,
-                    [(start_hour_fun > time_after), (start_hour_fun < time_before)],
+                    [(start_hour_fun >= time_after), (start_hour_fun < time_before)],
                 )
             )
         # all other cases should be and operator
         else:
-            clauses.append(start_hour_fun > time_after)
+            clauses.append(start_hour_fun >= time_after)
             clauses.append(start_hour_fun < time_before)
 
     if has_clip is not None:
@@ -633,18 +629,14 @@ def events_search(
             sub_label_clauses.append(Event.sub_label.is_null())
 
         for label in filtered_sub_labels:
-            lowered = label.lower()
-            sub_label_clauses.append(
-                fn.LOWER(Event.sub_label.cast("text")) == lowered
-            )  # include exact matches (case-insensitive)
+            # SQLite LOWER() only folds ASCII, so lower both sides in SQL to
+            # keep non-ASCII names matching exactly
+            stored = fn.LOWER(Event.sub_label.cast("text"))
+            sub_label_clauses.append(stored == fn.LOWER(label))
 
-            # include this label when part of a list (LIKE is case-insensitive in sqlite for ASCII)
-            sub_label_clauses.append(
-                fn.LOWER(Event.sub_label.cast("text")) % f"*{lowered},*"
-            )
-            sub_label_clauses.append(
-                fn.LOWER(Event.sub_label.cast("text")) % f"*, {lowered}*"
-            )
+            # include this label when part of a list
+            sub_label_clauses.append(stored % fn.LOWER(f"*{label},*"))
+            sub_label_clauses.append(stored % fn.LOWER(f"*, {label}*"))
 
         event_filters.append(reduce(operator.or_, sub_label_clauses))
 
@@ -749,12 +741,12 @@ def events_search(
             event_filters.append(
                 reduce(
                     operator.or_,
-                    [(start_hour_fun > time_after), (start_hour_fun < time_before)],
+                    [(start_hour_fun >= time_after), (start_hour_fun < time_before)],
                 )
             )
         # all other cases should be and operator
         else:
-            event_filters.append(start_hour_fun > time_after)
+            event_filters.append(start_hour_fun >= time_after)
             event_filters.append(start_hour_fun < time_before)
 
     # Perform semantic search

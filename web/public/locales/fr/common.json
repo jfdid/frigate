@@ -82,7 +82,8 @@
     "inProgress": "En cours",
     "invalidStartTime": "Heure de début invalide",
     "invalidEndTime": "Heure de fin invalide",
-    "never": "Jamais"
+    "never": "Jamais",
+    "custom": "Personnalisé…"
   },
   "button": {
     "apply": "Appliquer",
@@ -225,7 +226,7 @@
       "label": "Thème",
       "highcontrast": "Contraste élevé"
     },
-    "systemMetrics": "Métriques du système",
+    "systemMetrics": "Santé et Métriques système",
     "settings": "Paramètres",
     "withSystem": "Système",
     "restart": "Redémarrer Frigate",

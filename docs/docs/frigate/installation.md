@@ -394,22 +394,22 @@ DEEPX NPU support in Frigate is developed and maintained by [Sixfab](https://six
 
 #### Versions
 
-A DEEPX install has several separately versioned pieces, and they all have to agree. The driver, the runtime, and the daemon live on the Docker host; Frigate itself carries only the Python bindings, which it downloads on first start:
+A DEEPX install has several separately versioned pieces, and they all have to agree. The driver, the runtime, and the daemon live on the Docker host; Frigate itself carries none of them, and downloads the matching runtime package for its Python bindings on first start:
 
 | Component      | Version  | Installed on | Installed by              |
 | -------------- | -------- | ------------ | ------------------------- |
-| Kernel driver  | `v2.6.0` | Host  | `user_installation.sh`    |
-| DX-RT runtime  | `v3.4.0` | Host  | `user_installation.sh`    |
-| NPU firmware   | `v2.7.4` | The module   | Flashed from the host     |
-| DX-RT bindings | `v3.4.0` | Frigate      | Downloaded at first start |
+| Kernel driver  | `v2.7.0` | Host  | `user_installation.sh`    |
+| DX-RT runtime  | `v3.5.0` | Host  | `user_installation.sh`    |
+| NPU firmware   | `v2.7.6` | The module   | Flashed from the host     |
+| DX-RT bindings | `v3.5.0` | Frigate      | Downloaded at first start |
 
 :::warning
 
-A version mismatch does not produce a startup error. It typically shows up as inference requests that are accepted but never return a result, so detections simply stop appearing while Frigate looks healthy. If that happens after a Frigate upgrade, check every version in the table before anything else.
+A mismatch between the runtime and its Python bindings is caught at import, because the bindings refuse to load against a different runtime version. A mismatch between the runtime, the kernel driver and the firmware can still show up only as inference requests that are accepted but never return a result, so detections stop appearing while Frigate looks healthy. If that happens after a Frigate upgrade, check every version in the table before anything else.
 
 :::
 
-The installation script installs the DX-RT runtime on the host and enables `dxrt.service`, so the daemon starts at boot and any other program on the host can share the NPU with Frigate. Check the firmware version with `dxrt-cli --status` and update the module if it does not match the table above.
+The installation script installs the DX-RT runtime on the host and enables `dxrt.service`, so the daemon starts at boot and any other program on the host can share the NPU with Frigate. Check the firmware version with `dxcli -s` and update the module if it does not match the table above.
 
 #### Installation
 
@@ -435,6 +435,8 @@ ls /run/dxrt/
 
 #### Setup
 
+The DX-RT bindings are installed on first start, so the container needs to reach GitHub once. For a host without internet access, seed the package as described in [Detector runtimes](/frigate/network_requirements#detector-runtimes).
+
 To set up Frigate, follow the default installation instructions, for example: `ghcr.io/blakeblackshear/frigate:stable`
 
 #### Docker configuration
@@ -456,7 +458,7 @@ Add one `--device` per NPU, contiguously from `/dev/dxrt0`, since the client sto
 
 The installation script configures `dxrt.service` to place its socket in `/run/dxrt` through a systemd drop-in. Mounting the directory rather than the socket file means the container sees the new socket after `dxrt.service` is restarted, rather than holding on to a deleted one.
 
-`dxrtd` listens on an abstract socket as well, but that one does not cross into a container, so Frigate names the filesystem socket through `DXRT_DYNAMIC_IPC_ENDPOINT` on your behalf. Set that variable on the container yourself only if the daemon listens somewhere else, which means you also set it for `dxrtd` through its own systemd drop-in. The script writes `/etc/systemd/system/dxrt.service.d/frigate.conf` for exactly that, and has `dxrt.service` link the socket to `/tmp/dxrt_dynamic_ipc.sock` when it starts, so the host's own `dxrt-cli` and `dxtop` keep finding it at the default path they fall back to.
+`dxrtd` listens on an abstract socket as well, but that one does not cross into a container, so Frigate names the filesystem socket through `DXRT_DYNAMIC_IPC_ENDPOINT` on your behalf. Set that variable on the container yourself only if the daemon listens somewhere else, which means you also set it for `dxrtd` through its own systemd drop-in. The script writes `/etc/systemd/system/dxrt.service.d/frigate.conf` for exactly that, and has `dxrt.service` link the socket to `/tmp/dxrt_dynamic_ipc.sock` when it starts, so the host's own `dxcli` and `dxtop` keep finding it at the default path they fall back to.
 
 :::note
 
@@ -468,7 +470,7 @@ The device node is needed as well as the socket, because the client opens the NP
 
 `/dev/shm` does not need sharing.
 
-The DX-RT python bindings are not shipped in the Frigate image. Frigate downloads them on first start when a DEEPX detector is configured, and caches them under `/config`.
+The DX-RT python bindings are not shipped in the Frigate image. Frigate downloads the matching `libdxrt-bin` package on first start when a DEEPX detector is configured, takes the `dx_engine` wheel and the libraries it links against out of it, and keeps the package under `/config` so later reinstalls need no download.
 
 #### Configuration
 
@@ -521,6 +523,27 @@ or add these options to your `docker run` command:
 --device /dev/rga \
 --device /dev/mpp_service \
 --volume /sys/:/sys/:ro
+```
+
+Frigate reads NPU and GPU (RGA) usage from `/sys/kernel/debug`, which the kernel makes readable only by root. Frigate's services don't run as root, so to show these stats on the System page, bind the two load files into the container. This works with or without `privileged: true`:
+
+```yaml
+volumes:
+  - /sys/kernel/debug/rknpu/load:/rockchip/rknpu/load:ro
+  - /sys/kernel/debug/rkrga/load:/rockchip/rkrga/load:ro
+```
+
+or for `docker run`:
+
+```
+--volume /sys/kernel/debug/rknpu/load:/rockchip/rknpu/load:ro \
+--volume /sys/kernel/debug/rkrga/load:/rockchip/rkrga/load:ro
+```
+
+These lines are optional, and everything else works without them. Only add a line for a file that exists on your host, because Docker won't start the container if one is missing. Check with:
+
+```
+$ sudo ls /sys/kernel/debug/rknpu/load /sys/kernel/debug/rkrga/load
 ```
 
 #### Configuration
@@ -595,6 +618,60 @@ If you are using `docker run`, add this option to your command `--device /dev/ax
 #### Configuration
 
 Finally, configure [hardware object detection](/configuration/object_detectors#axera) to complete the setup.
+
+### Axelera Metis
+
+The Axelera Metis AI Accelerator is available in the M.2 and PCIe card form factors and is supported on x86 (Intel/AMD) PCs and Rock 5B class arm64 boards.
+
+The Axelera runtime used inside the container is not part of the Frigate image; Frigate downloads and installs it at first start once an Axelera detector is configured. Containers without internet access can provide the files themselves, see [Detector runtimes](/frigate/network_requirements#detector-runtimes). The host side kernel driver still has to be installed as described below.
+
+#### Installation
+
+Install the Metis PCIe kernel driver and firmware on the **host** following [Axelera's driver installation guide](https://developer.axelera.ai/axelera-documentation/Getting-Started/GettingStartedWithMetis/InstallingAxeleraMetisDriver). The driver creates the `/dev/metis*` device nodes. Reboot after installing it.
+
+#### Setup
+
+To set up Frigate, follow the default installation instructions, for example: `ghcr.io/blakeblackshear/frigate:stable`
+
+The runtime enumerates the card by the colon-separated name the host udev rules create as a symlink (for example `/dev/metis-0:1:0`). Docker cannot pass that name as a `--device` argument, and a bind mount resolves the symlink to the raw node, which the runtime does not enumerate. A CDI device spec defines the container path and host path as separate fields, and a `startContainer` hook recreates the symlink inside the container.
+
+Create `/etc/cdi/axelera.yaml` on the host, matching the node `ls /dev/metis*` prints:
+
+```yaml
+cdiVersion: "0.6.0"
+kind: axelera.ai/metis
+devices:
+  - name: "0"
+    containerEdits:
+      deviceNodes:
+        - path: /dev/metis-0-1-0
+          hostPath: /dev/metis-0-1-0
+        - path: /dev/dma_heap/system
+      hooks:
+        - hookName: startContainer
+          path: /bin/ln
+          args: ["/bin/ln", "-sf", "metis-0-1-0", "/dev/metis-0:1:0"]
+          timeout: 5
+```
+
+Then grant the device in your `docker-compose.yml` file:
+
+```yaml
+devices:
+  - axelera.ai/metis=0
+```
+
+If you are using `docker run`, add `--device axelera.ai/metis=0` to your command. CDI is enabled by default in Docker 28 and later; older versions need `"features": {"cdi": true}` in `daemon.json`. The hook runs as the container user, so this setup needs the container to start as root and does not work under Docker's `user:` mode.
+
+:::warning
+
+DMA-BUF must be available on the host kernel. On Debian/Ubuntu this is provided by the default kernel; on other systems it may need enabling (`CONFIG_DMABUF_HEAPS_SYSTEM`). If Frigate's log reports that no DMA heap can be allocated, check that `/dev/dma_heap/system` exists on the host and is passed into the container.
+
+:::
+
+#### Configuration
+
+Finally, configure [hardware object detection](/configuration/object_detectors#axelera-metis) to complete the setup.
 
 ## Docker
 
@@ -709,20 +786,17 @@ The community supported docker image tags for the current stable version are:
 
 :::warning
 
-As of Home Assistant Operating System 10.2 and Home Assistant 2023.6 defining separate network storage for media is supported.
-
 There are important limitations in HA OS to be aware of:
 
-- Separate local storage for media is not yet supported by Home Assistant
 - AMD GPUs are not supported because HA OS does not include the mesa driver.
-- Intel NPUs are not supported because HA OS does not include the NPU firmware.
+- Intel NPUs require Home Assistant OS 18.4 or newer. Earlier releases do not include the NPU firmware.
 - Nvidia GPUs are not supported because HA Apps do not support the Nvidia runtime.
 
 :::
 
 :::tip
 
-See [the network storage guide](/guides/ha_network_storage.md) for instructions to setup network storage for frigate.
+Frigate's media can be kept on separate storage, either a network share (Home Assistant 2023.6 or newer) or a local disk such as a second internal drive or a USB drive (Home Assistant 2026.11 or newer). See [the storage guide](/guides/ha_network_storage.md) for setup instructions.
 
 :::
 

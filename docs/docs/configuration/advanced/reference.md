@@ -117,7 +117,9 @@ auth:
   # Optional: Cookie to store the JWT token for native auth (default: shown below)
   cookie_name: frigate_token
   # Optional: Set secure flag on cookie. (default: shown below)
-  # NOTE: This should be set to True if you are using TLS
+  # NOTE: Frigate sets the flag automatically when serving TLS. Set this to True
+  # when a reverse proxy terminates TLS in front of Frigate. A proxy that connects
+  # to the TLS port must serve Frigate to browsers over HTTPS
   cookie_secure: False
   # Optional: Session length in seconds (default: shown below)
   session_length: 86400 # 24 hours
@@ -238,7 +240,7 @@ logger:
 
 # Optional: set environment variables
 environment_vars:
-  EXAMPLE_VAR: value
+  LIBVA_DRIVER_NAME: i965
 
 # Optional: birdseye configuration
 # NOTE: Can (enabled, mode) be overridden at the camera level
@@ -556,7 +558,7 @@ motion:
       # Optional: Whether this mask is active (default: true)
       enabled: true
       # Required: Coordinates polygon for the mask
-      coordinates: "0.000,0.469,1.000,0.469,1.000,1.000,0.000,1.000"
+      coordinates: "0.000,0.469,1.0,0.469,1.0,1.0,0.000,1.0"
   # Optional: improve contrast (default: shown below)
   # Enables dynamic contrast improvement. This should help improve night detections at the cost of making motion detection more sensitive
   # for daytime.
@@ -576,6 +578,10 @@ notifications:
   email: "admin@example.com"
   # Optional: Cooldown time for notifications in seconds (default: shown below)
   cooldown: 0
+  # Optional: Delivery of notifications sent while an alert is active (default: shown below)
+  # Options are immediate (deliver right away or drop) and reliable (retry for up to 30 seconds)
+  # NOTE: reliable can deliver late notifications that still link to the live view
+  ttl: immediate
 
 # Optional: Record configuration
 # NOTE: Can be overridden at the camera level
@@ -1212,6 +1218,9 @@ ui:
 
 # Optional: Telemetry configuration
 telemetry:
+  # Optional: Share one anonymous usage report a day (default: shown below)
+  # NOTE: See https://docs.frigate.video/configuration/advanced/analytics for what is sent
+  analytics: False
   # Optional: Enabled network interfaces for bandwidth stats monitoring (default: empty list, let nethogs search all)
   network_interfaces:
     - eth
